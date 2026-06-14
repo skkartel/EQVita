@@ -78,10 +78,10 @@ int main(void)
         return 1;
     }
 
-    ok &= expect_contains(app_main, "#define APP_LOG_PATH \"ur0:data/eqvita/app.log\"");
+    ok &= expect_contains(app_main, "#define APP_LOG_PATH EQVITA_DATA_DIR \"/\" EQVITA_APP_LOG_NAME");
     ok &= expect_contains(app_main, "ABOUT_ROW_LOG_FILE");
     ok &= expect_contains(app_main, "\"Log file\"");
-    ok &= expect_contains(app_main, "\"ur0:data/eqvita/app.log\"");
+    ok &= expect_contains(app_main, "*desc = APP_LOG_PATH");
     ok &= expect_contains(app_main, "\"Share for issues\"");
     ok &= expect_order(app_main, "#define ABOUT_ROW_REPOSITORY 1", "#define ABOUT_ROW_LOG_FILE 2");
     ok &= expect_order(app_main, "#define ABOUT_ROW_LOG_FILE 2", "#define ABOUT_ROW_WHAT 3");

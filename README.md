@@ -31,7 +31,6 @@ Current app/plugin ABI: `1.13.0`.
 - `common/` - shared ABI, preset, and boot-state helpers
 - `tests/` - host-side regression tests
 - `docs/` - build and hardware test notes
-- `research/vitasdk-audit-2026-06/` - VitaSDK and project audit notes
 - `scripts/` - Windows/WSL build helpers
 
 ## Build
@@ -66,6 +65,12 @@ cmake --build build-host
 ctest --test-dir build-host --output-on-failure
 ```
 
+Release hygiene checks:
+
+```powershell
+.\scripts\check-release-hygiene.ps1
+```
+
 GitHub Actions runs host tests normally and builds Vita artifacts inside the official pinned VitaSDK Docker image.
 
 ## Install On Vita
@@ -90,7 +95,7 @@ The app and plugin must both be from the same release line. For this build, keep
 - Left / right: change the selected value.
 - L / R: coarse EQ changes.
 - Cross: select, toggle, or activate.
-- Circle: back; exits from the main menu.
+- Back button: backs out of screens and exits from the main menu. EQVita follows the Vita enter-button setting for Cross/Circle.
 - Start: quick EQ on/off.
 - Triangle: Help.
 - Touch: tap rows or drag lists.
@@ -112,7 +117,7 @@ If you report an issue, share `ur0:data/eqvita/app.log` when possible.
 
 The app detects speakers, wired audio, and Bluetooth through AVConfig and sends that route hint to the plugin.
 
-- `Speakers` mode applies EQ only to Vita speakers.
+- `Vita speakers` mode applies EQ only to Vita speakers.
 - `All outputs` mode also allows wired and Bluetooth output.
 - If EQ is bypassed, the app shows why: disabled, wrong route, unknown output, invalid port, large buffer, copy failure, unsupported format, or audio busy.
 
@@ -123,6 +128,10 @@ At boot, the plugin loads the saved boot state before the app starts. Opening th
 Run host tests before every commit. Before publishing binaries, test on real Vita hardware with:
 
 [docs/hardware-test-checklist.md](docs/hardware-test-checklist.md)
+
+Use this release checklist before tagging or sharing a build:
+
+[docs/release-checklist.md](docs/release-checklist.md)
 
 Kernel audio hooks can pass host tests and still behave differently on real hardware, so hardware testing matters.
 

@@ -53,3 +53,49 @@ target_compile_definitions(test_app_help_text PRIVATE
 )
 
 add_test(NAME app_help_text COMMAND test_app_help_text)
+
+add_executable(test_app_state
+  test_app_state.c
+  ${CMAKE_SOURCE_DIR}/app/app_state.c
+)
+
+target_include_directories(test_app_state PRIVATE
+  ${CMAKE_SOURCE_DIR}
+)
+
+add_test(NAME app_state COMMAND test_app_state)
+
+add_executable(test_app_persistence
+  test_app_persistence.c
+  ${CMAKE_SOURCE_DIR}/app/persistence.c
+)
+
+target_compile_definitions(test_app_persistence PRIVATE
+  EQVITA_HOST_TESTS=1
+)
+
+target_include_directories(test_app_persistence PRIVATE
+  ${CMAKE_SOURCE_DIR}
+)
+
+add_test(NAME app_persistence COMMAND test_app_persistence)
+
+add_executable(test_app_persistence_vita_rename
+  test_app_persistence_vita_rename.c
+)
+
+target_include_directories(test_app_persistence_vita_rename PRIVATE
+  ${CMAKE_SOURCE_DIR}
+)
+
+add_test(NAME app_persistence_vita_rename COMMAND test_app_persistence_vita_rename)
+
+add_executable(test_app_ui_source
+  test_app_ui_source.c
+)
+
+target_compile_definitions(test_app_ui_source PRIVATE
+  EQVITA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+add_test(NAME app_ui_source COMMAND test_app_ui_source)

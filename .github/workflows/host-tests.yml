@@ -23,6 +23,10 @@ jobs:
         shell: pwsh
         run: ./scripts/test-build-wsl-validation.ps1
 
+      - name: Release hygiene checks
+        shell: pwsh
+        run: ./scripts/check-release-hygiene.ps1
+
   vita-build:
     runs-on: ubuntu-latest
     steps:
@@ -35,3 +39,19 @@ jobs:
             -w /build/git \
             vitasdk/vitasdk@sha256:2d7203c960a3f76a1fcec72d8dcfb97ddbbde8086b56458291f54e2ec17fb0f3 \
             bash -lc 'arm-vita-eabi-gcc --version && cmake --version && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel'
+
+      - name: Create artifact checksums
+        run: |
+          test -f build/app/EQVita.vpk
+          test -f build/plugin/eq_speaker.skprx
+          sha256sum build/app/EQVita.vpk build/plugin/eq_speaker.skprx > build/EQVita.sha256
+
+      - name: Upload Vita artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: eqvita-vita-artifacts
+          path: |
+            build/app/EQVita.vpk
+            build/plugin/eq_speaker.skprx
+            build/EQVita.sha256
+          if-no-files-found: error

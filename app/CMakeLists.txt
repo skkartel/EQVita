@@ -11,6 +11,8 @@ set(VITA_VERSION "01.13")
 
 add_executable("${A_NAME}"
   main.c
+  app_state.c
+  persistence.c
   ui_vita.c
 )
 
@@ -19,7 +21,6 @@ add_dependencies("${A_NAME}" eq_speaker_stubs)
 target_compile_options("${A_NAME}" PRIVATE
   -Wall
   -Wextra
-  -O2
   -std=c99
 )
 
@@ -37,6 +38,7 @@ target_link_libraries("${A_NAME}"
   EQSpeaker_stub
   vita2d
   SceAVConfig_stub
+  SceAppUtil_stub
   SceCtrl_stub
   SceTouch_stub
   SceDisplay_stub

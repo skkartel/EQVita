@@ -55,7 +55,17 @@ cmake --build build-host
 ctest --test-dir build-host --output-on-failure
 ```
 
-These cover shared ABI/preset validation, DSP channel-state behavior, sparse audio-port tracking, and audio port config handling. They do not replace hardware testing.
+These cover shared ABI/preset validation, DSP channel-state behavior, sparse audio-port tracking, app persistence, and UI source checks. They do not replace hardware testing.
+
+## Release Hygiene
+
+Before sharing a build, run:
+
+```powershell
+.\scripts\check-release-hygiene.ps1
+```
+
+This checks version text, VPK asset references, LiveArea PNG format, missing docs links, and accidental packaged audio files.
 
 ## Common Issues
 - **Missing math symbols:** Ensure `m` and `gcc` are linked.
@@ -81,4 +91,6 @@ Legacy raw `preset%d.bin` files are imported read-only when no `.eqvp` file exis
 ## Hardware Testing
 
 Before publishing binaries or closing runtime issues, run [hardware-test-checklist.md](hardware-test-checklist.md).
+
+For the full publish flow, use [release-checklist.md](release-checklist.md).
 

@@ -374,9 +374,17 @@ static void draw_background(void)
     vita2d_draw_rectangle(0, EQ_UI_FOOTER_Y, EQ_UI_SCREEN_W, EQ_UI_SCREEN_H - EQ_UI_FOOTER_Y, t->footer);
 }
 
+static void wait_for_render_idle(void)
+{
+    if (g_ui_ready) {
+        vita2d_wait_rendering_done();
+    }
+}
+
 static void free_icon_atlas(void)
 {
     if (g_icon_atlas) {
+        wait_for_render_idle();
         vita2d_free_texture(g_icon_atlas);
         g_icon_atlas = NULL;
     }
@@ -476,6 +484,7 @@ int eq_ui_init(void)
 
 void eq_ui_fini(void)
 {
+    wait_for_render_idle();
     free_icon_atlas();
     if (g_font) {
         vita2d_free_pgf(g_font);
@@ -542,21 +551,42 @@ static float draw_footer_symbol_label(float x, int icon, const char *label)
     return label_x + (float)text_width(TEXT_SIZE, label) + 34.0f;
 }
 
+static int footer_icon_from_text(const char *text, int fallback)
+{
+    if (!text) {
+        return fallback;
+    }
+    if (strstr(text, "Circle")) {
+        return FOOTER_ICON_CIRCLE;
+    }
+    if (strstr(text, "Cross")) {
+        return FOOTER_ICON_CROSS;
+    }
+    if (strstr(text, "Triangle")) {
+        return FOOTER_ICON_TRIANGLE;
+    }
+    return fallback;
+}
+
 void eq_ui_draw_footer(const char *left, const char *center, const char *right)
 {
     unsigned int color = theme()->text;
     const char *left_label = (left && strstr(left, "Back")) ? "Back" : "Exit";
-    float x;
-    (void)center;
-    (void)right;
+    int left_icon = footer_icon_from_text(left, FOOTER_ICON_CIRCLE);
+    int select_icon = footer_icon_from_text(center, FOOTER_ICON_CROSS);
+    int help_icon = footer_icon_from_text(right, FOOTER_ICON_TRIANGLE);
+    int show_select = center && strstr(center, "Select");
+    float x = 404.0f;
 
-    draw_footer_symbol_label(24, FOOTER_ICON_CIRCLE, left_label);
+    draw_footer_symbol_label(24, left_icon, left_label);
 
-    x = draw_footer_symbol_label(366, FOOTER_ICON_CROSS, "Select");
+    if (show_select) {
+        x = draw_footer_symbol_label(366, select_icon, "Select");
+    }
     draw_text_bold(x, 530, TEXT_SIZE, color, "START");
     draw_text(x + text_width(TEXT_SIZE, "START") + 10, 530, TEXT_SIZE, color, "Bypass");
 
-    draw_footer_symbol_label(862, FOOTER_ICON_TRIANGLE, "Help");
+    draw_footer_symbol_label(862, help_icon, "Help");
 }
 
 void eq_ui_draw_message(const char *message)

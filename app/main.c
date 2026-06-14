@@ -1,9 +1,6 @@
 #include <psp2/ctrl.h>
 #include <psp2/avconfig.h>
-#include <psp2/display.h>
-#include <psp2/io/fcntl.h>
-#include <psp2/io/dirent.h>
-#include <psp2/io/stat.h>
+#include <psp2/apputil.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/sysmem.h>
 #include <psp2/system_param.h>
@@ -12,20 +9,16 @@
 #include <stdarg.h>
 #include <string.h>
 
+#include "app_state.h"
+#include "persistence.h"
 #include "ui_vita.h"
 #include "../common/eq_shared.h"
 
 #define STEP_FINE 500
 #define STEP_COARSE 1000
 #define PRESET_SYNC_FAILED -4
-#define PRESET_PATH_FMT "ur0:data/eqvita/preset%d.eqvp"
-#define LEGACY_PRESET_PATH_FMT "ur0:data/eqvita/preset%d.bin"
-#define BOOT_STATE_PATH "ur0:data/eqvita/boot.eqbs"
-#define THEME_PATH "ur0:data/eqvita/theme.cfg"
-#define APP_LOG_PATH "ur0:data/eqvita/app.log"
-#define STATUS_LOG_INTERVAL_FRAMES 60
-#define THEME_FILE_MAGIC 0x4d545145u
-#define THEME_FILE_VERSION 1u
+#define APP_LOG_PATH EQVITA_DATA_DIR "/" EQVITA_APP_LOG_NAME
+#define STATUS_LOG_INTERVAL_FRAMES 300
 
 #define SCE_AVCONFIG_VOLCTRL_ONBOARD 1
 #define SCE_AVCONFIG_VOLCTRL_BLUETOOTH 2
@@ -62,7 +55,7 @@ static const char *band_labels[EQ_BANDS] = {
 #define STATUS_ROW_CLIPPING 5
 #define STATUS_ROW_PEAK 6
 #define STATUS_ROW_AUDIO_RATE 7
-#define STATUS_ROW_DIAGNOSTICS_SECTION 8
+#define STATUS_ROW_PROCESSING_SECTION 8
 #define STATUS_ROW_STREAMS 9
 #define STATUS_ROW_SKIPPED 10
 #define STATUS_ROW_UNKNOWN 11
@@ -92,7 +85,8 @@ static const char *band_labels[EQ_BANDS] = {
 #define SIMPLE_ROW_RESET_EQ 9
 #define SIMPLE_ROW_COUNT 10
 
-#define ADV_BAND_ROW_BASE 0
+#define ADV_ROW_PREAMP 0
+#define ADV_BAND_ROW_BASE 1
 #define ADV_ROW_PRESET_SECTION (ADV_BAND_ROW_BASE + EQ_BANDS)
 #define ADV_ROW_PRESET_SLOT (ADV_ROW_PRESET_SECTION + 1)
 #define ADV_ROW_SAVE_CURRENT (ADV_ROW_PRESET_SECTION + 2)
@@ -132,14 +126,20 @@ static const char *band_labels[EQ_BANDS] = {
 #define ABOUT_ROW_DATA_FOLDER 19
 #define ABOUT_ROW_COUNT 20
 
-static eq_control_t g_control;
+static eqvita_app_state_t g_app_state;
+#define g_control (g_app_state.control)
+#define g_preset_slot (g_app_state.preset_slot)
+
 static eq_status_t g_status;
 static eq_version_t g_version;
-static int g_preset_slot = 0;
 static int g_plugin_compatible = 0;
 static char g_message[96];
 static int g_message_frames = 0;
 static uint32_t g_status_log_frames = 0;
+static int g_boot_state_save_failed = 0;
+static int g_status_failure_count = 0;
+static int g_confirm_button = SCE_CTRL_CROSS;
+static int g_cancel_button = SCE_CTRL_CIRCLE;
 
 static app_screen_t g_screen = SCREEN_HOME;
 static int g_selected[SCREEN_COUNT];
@@ -164,77 +164,24 @@ static int clamp(int v, int lo, int hi)
     return v;
 }
 
-static void ensure_data_dir(void)
-{
-    sceIoMkdir("ur0:data", 0777);
-    sceIoMkdir("ur0:data/eqvita", 0777);
-}
-
-typedef struct app_theme_file
-{
-    uint32_t magic;
-    uint32_t version;
-    uint32_t theme_index;
-    uint32_t checksum;
-} app_theme_file_t;
-
-static uint32_t theme_file_checksum(uint32_t theme_index)
-{
-    return THEME_FILE_MAGIC ^ THEME_FILE_VERSION ^ theme_index ^ 0x45515448u;
-}
-
 static int load_theme_index(void)
 {
-    app_theme_file_t file;
-    SceUID fd = sceIoOpen(THEME_PATH, SCE_O_RDONLY, 0);
-    int read_res;
-
-    if (fd < 0) {
-        return EQ_UI_DEFAULT_THEME_INDEX;
-    }
-
-    read_res = sceIoRead(fd, &file, sizeof(file));
-    sceIoClose(fd);
-
-    if (read_res != (int)sizeof(file) ||
-        file.magic != THEME_FILE_MAGIC ||
-        file.version != THEME_FILE_VERSION ||
-        file.checksum != theme_file_checksum(file.theme_index) ||
-        file.theme_index >= (uint32_t)eq_ui_theme_count()) {
-        return EQ_UI_DEFAULT_THEME_INDEX;
-    }
-
-    return (int)file.theme_index;
+    int index = EQ_UI_DEFAULT_THEME_INDEX;
+    eqvita_load_theme_index(EQVITA_DATA_DIR, eq_ui_theme_count(), EQ_UI_DEFAULT_THEME_INDEX, &index);
+    return index;
 }
 
 static int save_theme_index(int index)
 {
-    app_theme_file_t file;
-    SceUID fd;
-    int written;
-    int close_res;
-
     if (index < 0 || index >= eq_ui_theme_count()) {
         index = EQ_UI_DEFAULT_THEME_INDEX;
     }
+    return eqvita_save_theme_index(EQVITA_DATA_DIR, index);
+}
 
-    ensure_data_dir();
-    file.magic = THEME_FILE_MAGIC;
-    file.version = THEME_FILE_VERSION;
-    file.theme_index = (uint32_t)index;
-    file.checksum = theme_file_checksum(file.theme_index);
-
-    fd = sceIoOpen(THEME_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
-    if (fd < 0) {
-        return fd;
-    }
-
-    written = sceIoWrite(fd, &file, sizeof(file));
-    close_res = sceIoClose(fd);
-    if (written != (int)sizeof(file)) {
-        return written < 0 ? written : -1;
-    }
-    return close_res;
+static int save_active_preset_slot(void)
+{
+    return eqvita_save_active_preset_slot(EQVITA_DATA_DIR, g_preset_slot);
 }
 
 static void app_log(const char *fmt, ...)
@@ -242,8 +189,6 @@ static void app_log(const char *fmt, ...)
     char line[256];
     va_list ap;
     int len;
-
-    ensure_data_dir();
 
     va_start(ap, fmt);
     len = vsnprintf(line, sizeof(line), fmt, ap);
@@ -255,22 +200,27 @@ static void app_log(const char *fmt, ...)
     if (len >= (int)sizeof(line)) {
         len = (int)sizeof(line) - 1;
     }
+    line[len] = '\0';
+    eqvita_append_log_line(EQVITA_DATA_DIR, line);
+}
 
-    SceUID fd = sceIoOpen(APP_LOG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0777);
-    if (fd < 0) {
-        return;
+static const char *startup_source_str(eqvita_startup_source_t source)
+{
+    switch (source) {
+        case EQVITA_STARTUP_SOURCE_BOOT: return "boot";
+        case EQVITA_STARTUP_SOURCE_PRESET: return "preset";
+        case EQVITA_STARTUP_SOURCE_LEGACY_PRESET: return "legacy-preset";
+        case EQVITA_STARTUP_SOURCE_DEFAULT:
+        default: return "default";
     }
-    sceIoWrite(fd, line, len);
-    sceIoWrite(fd, "\n", 1);
-    sceIoClose(fd);
 }
 
 static const char *route_str(uint8_t r)
 {
     switch (r) {
-        case EQ_ROUTE_SPEAKER: return "Speakers";
-        case EQ_ROUTE_HEADPHONES: return "Wired";
-        case EQ_ROUTE_BLUETOOTH: return "Bluetooth";
+        case EQ_ROUTE_SPEAKER: return "Vita speakers";
+        case EQ_ROUTE_HEADPHONES: return "Wired headphones";
+        case EQ_ROUTE_BLUETOOTH: return "Bluetooth audio";
         default: return "Unknown";
     }
 }
@@ -303,12 +253,29 @@ static const char *headroom_mode_str(uint8_t mode)
 
 static const char *eq_target_str(void)
 {
-    return g_control.speaker_only ? "Speakers" : "All outputs";
+    return g_control.speaker_only ? "Vita speakers" : "All outputs";
+}
+
+static const char *button_name(int button)
+{
+    return button == SCE_CTRL_CIRCLE ? "Circle" : "Cross";
+}
+
+static void init_button_mapping(void)
+{
+    int enter_button = SCE_SYSTEM_PARAM_ENTER_BUTTON_CROSS;
+    if (sceAppUtilSystemParamGetInt(SCE_SYSTEM_PARAM_ID_ENTER_BUTTON, &enter_button) >= 0 &&
+        enter_button == SCE_SYSTEM_PARAM_ENTER_BUTTON_CIRCLE) {
+        g_confirm_button = SCE_CTRL_CIRCLE;
+        g_cancel_button = SCE_CTRL_CROSS;
+    } else {
+        g_confirm_button = SCE_CTRL_CROSS;
+        g_cancel_button = SCE_CTRL_CIRCLE;
+    }
 }
 
 static int save_preset(void);
 static int save_boot_state(void);
-static void persist_current_settings_quietly(void);
 
 static void set_message(const char *fmt, ...)
 {
@@ -379,12 +346,22 @@ static eq_route_t detect_route_user(void)
     return EQ_ROUTE_UNKNOWN;
 }
 
+static uint32_t audio_budget_us(uint32_t frames, uint32_t sample_rate)
+{
+    if (frames == 0 || sample_rate == 0) {
+        return 0;
+    }
+    return (uint32_t)(((uint64_t)frames * 1000000u) / sample_rate);
+}
+
 static void maybe_log_status(void)
 {
-    static uint32_t last_counter = 0;
     static uint8_t last_route = 0xffu;
     static uint8_t last_reason = 0xffu;
     static uint8_t last_active = 0xffu;
+    static int32_t last_clips = -1;
+    static uint32_t last_busy_bypass = 0xffffffffu;
+    static uint32_t last_unknown_port = 0xffffffffu;
     int changed;
     int force_log;
 
@@ -394,16 +371,19 @@ static void maybe_log_status(void)
 
     g_status_log_frames++;
     force_log = (g_status_log_frames >= STATUS_LOG_INTERVAL_FRAMES);
-    changed = (g_status.status_counter != last_counter ||
-        g_status.route != last_route ||
+    changed = (g_status.route != last_route ||
         g_status.bypass_reason != last_reason ||
-        g_status.eq_active != last_active);
+        g_status.eq_active != last_active ||
+        g_status.clip_events != last_clips ||
+        g_status.debug_busy_bypass_count != last_busy_bypass ||
+        g_status.debug_unknown_port_count != last_unknown_port);
 
     if (g_status_log_frames < STATUS_LOG_INTERVAL_FRAMES && !changed) {
         return;
     }
 
     if (force_log || changed) {
+        uint32_t budget_us = audio_budget_us(g_status.debug_len, g_status.sample_rate);
         g_status_log_frames = 0;
         app_log("status: route=%s active=%u reason=%s sr=%u port=%u len=%u ch=%u runs=%u ports=%u busy=%u unknown=%u last_us=%u max_us=%u clips=%d peak_l=%u peak_r=%u",
             route_str(g_status.route),
@@ -423,30 +403,93 @@ static void maybe_log_status(void)
             g_status.peak_l,
             g_status.peak_r);
 
-        last_counter = g_status.status_counter;
+        if (budget_us > 0 &&
+            (g_status.debug_last_us > budget_us || g_status.debug_max_us > budget_us)) {
+            app_log("audio-budget: last_us=%u budget_us=%u max_us=%u len=%u sr=%u",
+                g_status.debug_last_us,
+                budget_us,
+                g_status.debug_max_us,
+                g_status.debug_len,
+                g_status.sample_rate);
+        }
+
         last_route = g_status.route;
         last_reason = g_status.bypass_reason;
         last_active = g_status.eq_active;
+        last_clips = g_status.clip_events;
+        last_busy_bypass = g_status.debug_busy_bypass_count;
+        last_unknown_port = g_status.debug_unknown_port_count;
     }
 }
 
-static int mark_dirty(void)
+static void mark_boot_state_dirty(void)
+{
+    eqvita_app_state_mark_boot_dirty(&g_app_state);
+    g_boot_state_save_failed = 0;
+}
+
+static void note_status_result(int status_res)
+{
+    if (status_res >= 0) {
+        if (g_status_failure_count > 0) {
+            set_message("Plugin status restored");
+        }
+        g_status_failure_count = 0;
+        eqvita_app_state_set_status_stale(&g_app_state, 0);
+        return;
+    }
+
+    eqvita_app_state_set_status_stale(&g_app_state, 1);
+    if (g_status_failure_count == 0) {
+        set_message("Plugin status failed (%d)", status_res);
+    }
+    if (g_status_failure_count < 1000000) {
+        g_status_failure_count++;
+    }
+}
+
+static void poll_plugin_status(void)
+{
+    if (g_plugin_compatible) {
+        note_status_result(EqGetStatus(&g_status));
+    }
+}
+
+static int apply_control_candidate(const eq_control_t *candidate, int mark_boot_dirty_on_success)
 {
     int set_res;
     int status_res;
+    eq_control_t next;
 
     if (!g_plugin_compatible) {
+        set_message("Plugin version mismatch");
+        return -1;
+    }
+    if (!candidate) {
         return -1;
     }
 
-    g_control.route_hint = (uint8_t)detect_route_user();
-    g_control.dirty_counter++;
-    set_res = EqSetControl(&g_control);
-    status_res = (set_res >= 0) ? EqGetStatus(&g_status) : -1;
-    if (set_res < 0 || status_res < 0) {
-        set_message("Plugin communication failed (%d/%d)", set_res, status_res);
+    next = *candidate;
+    next.route_hint = (uint8_t)detect_route_user();
+    next.dirty_counter = g_control.dirty_counter + 1;
+    if (next.dirty_counter == 0) {
+        next.dirty_counter = 1;
     }
-    return set_res;
+
+    set_res = EqSetControl(&next);
+    status_res = (set_res >= 0) ? EqGetStatus(&g_status) : -1;
+    if (set_res < 0) {
+        set_message("Plugin communication failed (%d)", set_res);
+        return set_res;
+    }
+
+    g_control = next;
+    if (mark_boot_dirty_on_success) {
+        mark_boot_state_dirty();
+        eqvita_app_state_mark_current_preset_dirty(&g_app_state);
+    }
+    note_status_result(status_res);
+    return 0;
 }
 
 static void refresh_route_hint(void)
@@ -458,9 +501,9 @@ static void refresh_route_hint(void)
 
     route = (uint8_t)detect_route_user();
     if (g_control.route_hint != route) {
-        g_control.route_hint = route;
-        g_control.dirty_counter++;
-        if (EqSetControl(&g_control) < 0) {
+        eq_control_t next = g_control;
+        next.route_hint = route;
+        if (apply_control_candidate(&next, 0) < 0) {
             set_message("Route update failed");
         }
     }
@@ -468,159 +511,158 @@ static void refresh_route_hint(void)
 
 static void toggle_enabled(void)
 {
-    g_control.enabled = !g_control.enabled;
-    mark_dirty();
+    eq_control_t next = g_control;
+    next.enabled = !next.enabled;
+    apply_control_candidate(&next, 1);
 }
 
 static void toggle_speaker_only(void)
 {
-    g_control.speaker_only = !g_control.speaker_only;
-    if (mark_dirty() == 0) {
-        persist_current_settings_quietly();
-    }
+    eq_control_t next = g_control;
+    next.speaker_only = !next.speaker_only;
+    apply_control_candidate(&next, 1);
 }
 
 static void toggle_hpf(void)
 {
-    eq_control_set_hpf_enabled(&g_control, !eq_control_hpf_enabled(&g_control));
-    mark_dirty();
+    eq_control_t next = g_control;
+    eq_control_set_hpf_enabled(&next, !eq_control_hpf_enabled(&next));
+    apply_control_candidate(&next, 1);
 }
 
 static void adjust_headroom_mode(int delta)
 {
-    int mode = (int)eq_control_get_headroom_mode(&g_control) + delta;
+    eq_control_t next = g_control;
+    int mode = (int)eq_control_get_headroom_mode(&next) + delta;
     if (mode < 0) mode = EQ_HEADROOM_RAW;
     if (mode > EQ_HEADROOM_RAW) mode = EQ_HEADROOM_SAFE;
-    eq_control_set_headroom_mode(&g_control, (uint8_t)mode);
-    mark_dirty();
+    eq_control_set_headroom_mode(&next, (uint8_t)mode);
+    apply_control_candidate(&next, 1);
 }
 
 static void adjust_preamp(int delta)
 {
-    int v = g_control.preamp_mdB + delta;
-    g_control.preamp_mdB = clamp(v, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
-    mark_dirty();
+    eq_control_t next = g_control;
+    int v = next.preamp_mdB + delta;
+    next.preamp_mdB = clamp(v, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
+    apply_control_candidate(&next, 1);
 }
 
 static void adjust_band(int idx, int delta)
 {
-    int v = g_control.band_gain_mdB[idx] + delta;
-    g_control.band_gain_mdB[idx] = clamp(v, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
-    mark_dirty();
+    eq_control_t next = g_control;
+    int v;
+    if (idx < 0 || idx >= EQ_BANDS) {
+        return;
+    }
+    v = next.band_gain_mdB[idx] + delta;
+    next.band_gain_mdB[idx] = clamp(v, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
+    apply_control_candidate(&next, 1);
 }
 
 static int save_preset(void)
 {
-    char path[64];
-    SceUID fd;
-    eq_preset_file_t preset;
-    int written;
-    int close_res;
-
-    ensure_data_dir();
-    snprintf(path, sizeof(path), PRESET_PATH_FMT, g_preset_slot);
-    fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
-    if (fd < 0) return fd;
-
-    eq_preset_build(&preset, &g_control);
-    written = sceIoWrite(fd, &preset, sizeof(preset));
-    close_res = sceIoClose(fd);
-    if (written != (int)sizeof(preset)) {
-        return written < 0 ? written : -1;
-    }
-    return close_res;
+    return eqvita_save_preset(EQVITA_DATA_DIR, g_preset_slot, &g_control);
 }
 
 static int save_boot_state(void)
 {
     eq_control_t boot_control = g_control;
-    SceUID fd;
-    eq_boot_state_file_t state;
-    int written;
-    int close_res;
+    int res;
 
-    ensure_data_dir();
     boot_control.route_hint = (uint8_t)detect_route_user();
-    fd = sceIoOpen(BOOT_STATE_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
-    if (fd < 0) return fd;
-
-    eq_boot_state_build(&state, &boot_control);
-    written = sceIoWrite(fd, &state, sizeof(state));
-    close_res = sceIoClose(fd);
-    if (written != (int)sizeof(state)) {
-        return written < 0 ? written : -1;
+    res = eqvita_save_boot_state(EQVITA_DATA_DIR, &boot_control);
+    if (res >= 0) {
+        eqvita_app_state_mark_boot_saved(&g_app_state);
+        g_boot_state_save_failed = 0;
+    } else {
+        g_boot_state_save_failed = 1;
     }
-    return close_res;
+    return res;
 }
 
-static void persist_current_settings_quietly(void)
+static int persist_active_preset_state(const char *reason, int *out_slot_res, int *out_boot_res)
 {
-    int preset_res = save_preset();
-    int boot_res = preset_res >= 0 ? save_boot_state() : preset_res;
-    if (preset_res < 0 || boot_res < 0) {
-        set_message("Save failed (%d/%d)", preset_res, boot_res);
+    int slot_res = save_active_preset_slot();
+    int boot_res = save_boot_state();
+
+    if (out_slot_res) {
+        *out_slot_res = slot_res;
+    }
+    if (out_boot_res) {
+        *out_boot_res = boot_res;
+    }
+
+    app_log("persist: reason=%s slot=%d active_slot=%d boot=%d",
+            reason ? reason : "unknown",
+            g_preset_slot + 1,
+            slot_res,
+            boot_res);
+
+    return (slot_res >= 0 && boot_res >= 0) ? 0 : -1;
+}
+
+static void adjust_preset_slot(int delta)
+{
+    int previous_slot = g_preset_slot;
+
+    eqvita_app_state_adjust_preset_slot(&g_app_state, delta);
+    if (g_preset_slot != previous_slot) {
+        int slot_res = save_active_preset_slot();
+        app_log("persist: reason=slot-select slot=%d active_slot=%d", g_preset_slot + 1, slot_res);
+        if (slot_res < 0) {
+            set_message("Slot save failed (%d)", slot_res);
+        }
     }
 }
 
 static int load_preset(void)
 {
-    char path[64];
-    eq_control_t previous = g_control;
-    eq_preset_primary_status_t primary_status = EQ_PRESET_PRIMARY_MISSING;
-    SceUID fd;
+    eq_control_t loaded;
+    int legacy_loaded = 0;
 
-    snprintf(path, sizeof(path), PRESET_PATH_FMT, g_preset_slot);
-    fd = sceIoOpen(path, SCE_O_RDONLY, 0);
-    if (fd >= 0) {
-        eq_preset_file_t preset;
-        eq_control_t loaded;
-        int r = sceIoRead(fd, &preset, sizeof(preset));
-        sceIoClose(fd);
-        if (r == sizeof(preset) && eq_preset_extract_control(&preset, &loaded) == 0) {
-            primary_status = EQ_PRESET_PRIMARY_VALID;
-            g_control = loaded;
-            if (mark_dirty() < 0) {
-                g_control = previous;
-                return PRESET_SYNC_FAILED;
-            }
-            return 0;
-        }
-        primary_status = EQ_PRESET_PRIMARY_INVALID;
+    if (eqvita_load_preset(EQVITA_DATA_DIR, g_preset_slot, &loaded, &legacy_loaded) < 0) {
+        return -1;
     }
 
-    if (!eq_preset_should_try_legacy(primary_status)) {
-        return -2;
+    if (apply_control_candidate(&loaded, 1) < 0) {
+        return PRESET_SYNC_FAILED;
     }
+    eqvita_app_state_mark_current_preset_saved(&g_app_state);
+    g_eq_entry_control = g_control;
+    g_eq_entry_valid = 1;
+    return legacy_loaded ? 1 : 0;
+}
 
-    snprintf(path, sizeof(path), LEGACY_PRESET_PATH_FMT, g_preset_slot);
-    fd = sceIoOpen(path, SCE_O_RDONLY, 0);
-    if (fd >= 0) {
-        eq_control_t tmp;
-        int r = sceIoRead(fd, &tmp, sizeof(tmp));
-        sceIoClose(fd);
-        if (r == sizeof(tmp) && eq_control_validate(&tmp) == 0) {
-            g_control = tmp;
-            if (mark_dirty() < 0) {
-                g_control = previous;
-                return PRESET_SYNC_FAILED;
-            }
-            return 1;
-        }
-        return -3;
+static void save_boot_state_with_message(void)
+{
+    int slot_res;
+    int boot_res;
+
+    if (persist_active_preset_state("startup-save", &slot_res, &boot_res) >= 0) {
+        set_message("Startup settings saved");
+    } else if (slot_res < 0) {
+        set_message("Startup saved, slot save failed (%d)", slot_res);
+    } else {
+        set_message("Startup save failed (%d)", boot_res);
     }
-
-    return fd;
 }
 
 static void save_preset_with_message(void)
 {
     int res = save_preset();
     if (res >= 0) {
-        int boot_res = save_boot_state();
-        if (boot_res >= 0) {
+        int slot_res;
+        int boot_res;
+        eqvita_app_state_mark_current_preset_saved(&g_app_state);
+        g_eq_entry_control = g_control;
+        g_eq_entry_valid = 1;
+        if (persist_active_preset_state("preset-save", &slot_res, &boot_res) >= 0) {
             set_message("Saved preset %d", g_preset_slot + 1);
+        } else if (slot_res < 0) {
+            set_message("Preset saved, slot save failed (%d)", slot_res);
         } else {
-            set_message("Preset saved, boot state failed");
+            set_message("Preset saved, startup save failed (%d)", boot_res);
         }
     } else {
         set_message("Save failed (%d)", res);
@@ -629,17 +671,44 @@ static void save_preset_with_message(void)
 
 static void save_as_next_preset(void)
 {
-    g_preset_slot = (g_preset_slot + 1) % 3;
-    save_preset_with_message();
+    int previous_slot = g_preset_slot;
+    int next_slot = (g_preset_slot + 1) % EQVITA_PRESET_SLOT_COUNT;
+    g_preset_slot = next_slot;
+    if (save_preset() >= 0) {
+        int slot_res;
+        int boot_res;
+        eqvita_app_state_mark_current_preset_saved(&g_app_state);
+        g_eq_entry_control = g_control;
+        g_eq_entry_valid = 1;
+        if (persist_active_preset_state("preset-save-next", &slot_res, &boot_res) >= 0) {
+            set_message("Saved preset %d", g_preset_slot + 1);
+        } else if (slot_res < 0) {
+            set_message("Preset saved, slot save failed (%d)", slot_res);
+        } else {
+            set_message("Preset saved, startup save failed (%d)", boot_res);
+        }
+    } else {
+        g_preset_slot = previous_slot;
+        set_message("Save failed");
+    }
 }
 
 static void load_preset_with_message(void)
 {
     int res = load_preset();
     if (res > 0) {
+        persist_active_preset_state("preset-load-legacy", NULL, NULL);
         set_message("Imported legacy preset %d", g_preset_slot + 1);
     } else if (res == 0) {
-        set_message("Loaded preset %d", g_preset_slot + 1);
+        int slot_res;
+        int boot_res;
+        if (persist_active_preset_state("preset-load", &slot_res, &boot_res) >= 0) {
+            set_message("Loaded preset %d", g_preset_slot + 1);
+        } else if (slot_res < 0) {
+            set_message("Preset loaded, slot save failed (%d)", slot_res);
+        } else {
+            set_message("Preset loaded, startup save failed (%d)", boot_res);
+        }
     } else if (res != PRESET_SYNC_FAILED) {
         set_message("Load failed (%d)", res);
     }
@@ -651,52 +720,69 @@ static void restore_eq_entry(void)
         set_message("No edits to undo");
         return;
     }
-    g_control = g_eq_entry_control;
-    if (mark_dirty() == 0) {
+    if (apply_control_candidate(&g_eq_entry_control, 1) == 0) {
         set_message("Restored screen entry settings");
     }
 }
 
 static void reset_defaults(void)
 {
-    g_control.preamp_mdB = EQ_DEFAULT_PREAMP_MDB;
+    eq_control_t next = g_control;
+    next.preamp_mdB = EQ_DEFAULT_PREAMP_MDB;
     for (int i = 0; i < EQ_BANDS; ++i) {
-        g_control.band_gain_mdB[i] = 0;
+        next.band_gain_mdB[i] = 0;
     }
-    mark_dirty();
+    apply_control_candidate(&next, 1);
 }
 
 static void apply_simple_eq(int bass, int mid, int treble, int auto_preamp)
 {
+    eq_control_t next = g_control;
+
     bass = clamp(bass, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
     mid = clamp(mid, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
     treble = clamp(treble, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
 
-    g_control.band_gain_mdB[0] = 0;
-    for (int i = 1; i <= 3; ++i) g_control.band_gain_mdB[i] = bass;
-    for (int i = 4; i <= 6; ++i) g_control.band_gain_mdB[i] = mid;
-    for (int i = 7; i <= 9; ++i) g_control.band_gain_mdB[i] = treble;
+    next.band_gain_mdB[0] = 0;
+    for (int i = 1; i <= 3; ++i) next.band_gain_mdB[i] = bass;
+    for (int i = 4; i <= 6; ++i) next.band_gain_mdB[i] = mid;
+    for (int i = 7; i <= 9; ++i) next.band_gain_mdB[i] = treble;
 
     if (auto_preamp) {
         int32_t max_boost = bass;
         if (mid > max_boost) max_boost = mid;
         if (treble > max_boost) max_boost = treble;
         if (max_boost < 0) max_boost = 0;
-        g_control.preamp_mdB = -max_boost;
-        if (g_control.preamp_mdB < -EQ_MAX_ABS_GAIN_MDB) g_control.preamp_mdB = -EQ_MAX_ABS_GAIN_MDB;
+        next.preamp_mdB = -max_boost;
+        if (next.preamp_mdB < -EQ_MAX_ABS_GAIN_MDB) next.preamp_mdB = -EQ_MAX_ABS_GAIN_MDB;
     }
-    mark_dirty();
+    apply_control_candidate(&next, 1);
 }
 
 static void apply_preset_stock_depth(void)
 {
-    g_control.preamp_mdB = -4000;
-    g_control.band_gain_mdB[0] = 0;
-    for (int i = 1; i <= 3; ++i) g_control.band_gain_mdB[i] = 4000;
-    for (int i = 4; i <= 6; ++i) g_control.band_gain_mdB[i] = -2000;
-    for (int i = 7; i <= 9; ++i) g_control.band_gain_mdB[i] = 2000;
-    if (mark_dirty() == 0) {
-        set_message("Applied STOCK Depth");
+    eq_control_t next = g_control;
+    next.preamp_mdB = -4000;
+    next.band_gain_mdB[0] = 0;
+    for (int i = 1; i <= 3; ++i) next.band_gain_mdB[i] = 4000;
+    for (int i = 4; i <= 6; ++i) next.band_gain_mdB[i] = -2000;
+    for (int i = 7; i <= 9; ++i) next.band_gain_mdB[i] = 2000;
+    if (apply_control_candidate(&next, 1) == 0) {
+        int save_res = save_preset();
+        if (save_res >= 0) {
+            int slot_res;
+            int boot_res;
+            eqvita_app_state_mark_current_preset_saved(&g_app_state);
+            if (persist_active_preset_state("preset-stock-depth", &slot_res, &boot_res) >= 0) {
+                set_message("Applied and saved STOCK Depth");
+            } else if (slot_res < 0) {
+                set_message("Applied STOCK Depth, slot save failed (%d)", slot_res);
+            } else {
+                set_message("Applied STOCK Depth, startup save failed (%d)", boot_res);
+            }
+        } else {
+            set_message("Applied STOCK Depth, preset save failed (%d)", save_res);
+        }
     }
 }
 
@@ -707,16 +793,31 @@ static void apply_preset_mod_switch(void)
         -5000, -5000, -2500, -2500, -3000
     };
 
-    g_control.enabled = 1;
-    g_control.speaker_only = 1;
-    eq_control_set_hpf_enabled(&g_control, 0);
-    eq_control_set_headroom_mode(&g_control, EQ_HEADROOM_LOUD);
-    g_control.preamp_mdB = -6500;
+    eq_control_t next = g_control;
+    next.enabled = 1;
+    next.speaker_only = 1;
+    eq_control_set_hpf_enabled(&next, 0);
+    eq_control_set_headroom_mode(&next, EQ_HEADROOM_LOUD);
+    next.preamp_mdB = -6500;
     for (int i = 0; i < EQ_BANDS; ++i) {
-        g_control.band_gain_mdB[i] = gains[i];
+        next.band_gain_mdB[i] = gains[i];
     }
-    if (mark_dirty() == 0) {
-        set_message("Applied MOD Switch");
+    if (apply_control_candidate(&next, 1) == 0) {
+        int save_res = save_preset();
+        if (save_res >= 0) {
+            int slot_res;
+            int boot_res;
+            eqvita_app_state_mark_current_preset_saved(&g_app_state);
+            if (persist_active_preset_state("preset-mod-switch", &slot_res, &boot_res) >= 0) {
+                set_message("Applied and saved MOD Switch");
+            } else if (slot_res < 0) {
+                set_message("Applied MOD Switch, slot save failed (%d)", slot_res);
+            } else {
+                set_message("Applied MOD Switch, startup save failed (%d)", boot_res);
+            }
+        } else {
+            set_message("Applied MOD Switch, preset save failed (%d)", save_res);
+        }
     }
 }
 
@@ -746,7 +847,7 @@ static const char *screen_subtitle(app_screen_t screen)
         case SCREEN_STATUS: return "Live output and app status";
         case SCREEN_PRESETS: return "Choose or save sound profiles";
         case SCREEN_SIMPLE: return "Adjust bass, mids, treble";
-        case SCREEN_ADVANCED: return "Fine tune 10 bands";
+        case SCREEN_ADVANCED: return "Preamp and 10 bands";
         case SCREEN_THEMES: return "Choose the app color style";
         case SCREEN_SETTINGS: return "Choose where EQ applies";
         case SCREEN_ABOUT: return "Controls, version, and help";
@@ -789,7 +890,7 @@ static int row_is_section(app_screen_t screen, int row)
     switch (screen) {
         case SCREEN_STATUS:
             return row == STATUS_ROW_LEVELS_SECTION ||
-                   row == STATUS_ROW_DIAGNOSTICS_SECTION;
+                   row == STATUS_ROW_PROCESSING_SECTION;
         case SCREEN_PRESETS:
             return row == PRESETS_ROW_ACTIONS_SECTION;
         case SCREEN_SIMPLE:
@@ -927,7 +1028,9 @@ static void row_value(char *value, size_t value_size, app_screen_t screen, int r
             else if (row == SIMPLE_ROW_SAVE_NEXT) snprintf(value, value_size, "Slot %d", ((g_preset_slot + 1) % 3) + 1);
             break;
         case SCREEN_ADVANCED:
-            if (row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
+            if (row == ADV_ROW_PREAMP) {
+                format_db(value, value_size, g_control.preamp_mdB);
+            } else if (row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
                 format_db(value, value_size, g_control.band_gain_mdB[row - ADV_BAND_ROW_BASE]);
             } else if (row == ADV_ROW_PRESET_SLOT) {
                 snprintf(value, value_size, "Slot %d", g_preset_slot + 1);
@@ -943,8 +1046,11 @@ static void row_value(char *value, size_t value_size, app_screen_t screen, int r
             else if (row == SETTINGS_ROW_SCOPE) snprintf(value, value_size, "%s", eq_target_str());
             else if (row == SETTINGS_ROW_HPF) snprintf(value, value_size, "%s", eq_control_hpf_enabled(&g_control) ? "On" : "Off");
             else if (row == SETTINGS_ROW_HEADROOM) snprintf(value, value_size, "%s", headroom_mode_str(eq_control_get_headroom_mode(&g_control)));
-            else if (row == SETTINGS_ROW_ROUTE) snprintf(value, value_size, "%s", route_str(g_control.route_hint));
-            else if (row == SETTINGS_ROW_STARTUP) snprintf(value, value_size, "Saved");
+            else if (row == SETTINGS_ROW_ROUTE) snprintf(value, value_size, "%s",
+                route_str(g_status.route != EQ_ROUTE_UNKNOWN ? g_status.route : g_control.route_hint));
+            else if (row == SETTINGS_ROW_STARTUP) snprintf(value, value_size, "%s",
+                g_boot_state_save_failed ? "Save failed" :
+                eqvita_app_state_boot_dirty(&g_app_state) ? "Unsaved" : "Saved");
             break;
         case SCREEN_ABOUT:
             if (row == ABOUT_ROW_VERSION) snprintf(value, value_size, "v%d.%d.%d", g_version.major, g_version.minor, g_version.patch);
@@ -988,8 +1094,8 @@ static void row_text(app_screen_t screen,
         }
         case SCREEN_STATUS:
             if (row_is_section(screen, row)) {
-                *label = row == STATUS_ROW_LEVELS_SECTION ? "Audio levels" : "Diagnostics";
-                *desc = row == STATUS_ROW_DIAGNOSTICS_SECTION ? "Read-only processing counters" : "";
+                *label = row == STATUS_ROW_LEVELS_SECTION ? "Audio levels" : "Processing";
+                *desc = row == STATUS_ROW_PROCESSING_SECTION ? "Read-only audio counters" : "";
                 *kind = EQ_UI_ROW_SECTION;
             } else {
                 *icon = (const char *[]){"status", "speaker", "preset", "status", "level", "level", "info", "level", "status", "info", "info", "info"}[
@@ -1055,7 +1161,7 @@ static void row_text(app_screen_t screen,
             } else if (row == PRESETS_ROW_SAVE) {
                 *icon = "save";
                 *label = "Save current preset";
-                *desc = "Saves preset and startup";
+                *desc = "Saves the selected slot";
                 *kind = EQ_UI_ROW_ACTION;
             } else if (row == PRESETS_ROW_LOAD) {
                 *icon = "load";
@@ -1102,7 +1208,7 @@ static void row_text(app_screen_t screen,
             } else if (row == SIMPLE_ROW_SAVE_CURRENT) {
                 *icon = "save";
                 *label = "Save to this slot";
-                *desc = "Keep this curve after reboot";
+                *desc = "Save this sound profile";
                 *kind = EQ_UI_ROW_ACTION;
             } else if (row == SIMPLE_ROW_SAVE_NEXT) {
                 *icon = "save";
@@ -1122,7 +1228,12 @@ static void row_text(app_screen_t screen,
             }
             break;
         case SCREEN_ADVANCED:
-            if (row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
+            if (row == ADV_ROW_PREAMP) {
+                *icon = "level";
+                *label = "Preamp";
+                *desc = "Overall volume before EQ";
+                *kind = EQ_UI_ROW_ADJUST;
+            } else if (row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
                 int band = row - ADV_BAND_ROW_BASE;
                 *icon = "advanced";
                 *label = band_labels[band];
@@ -1140,7 +1251,7 @@ static void row_text(app_screen_t screen,
             } else if (row == ADV_ROW_SAVE_CURRENT) {
                 *icon = "save";
                 *label = "Save to this slot";
-                *desc = "Keep this curve after reboot";
+                *desc = "Save this sound profile";
                 *kind = EQ_UI_ROW_ACTION;
             } else if (row == ADV_ROW_SAVE_NEXT) {
                 *icon = "save";
@@ -1192,12 +1303,13 @@ static void row_text(app_screen_t screen,
                 *kind = EQ_UI_ROW_ADJUST;
             } else if (row == SETTINGS_ROW_ROUTE) {
                 *icon = "route";
-                *label = "Detected output";
-                *desc = "Kept for games after exit";
+                *label = "Live output";
+                *desc = "What the Vita is using now";
             } else if (row == SETTINGS_ROW_STARTUP) {
                 *icon = "save";
                 *label = "Startup settings";
-                *desc = "Used after reboot";
+                *desc = "Save current sound for reboot";
+                *kind = EQ_UI_ROW_ACTION;
             }
             break;
         case SCREEN_ABOUT:
@@ -1269,7 +1381,7 @@ static void row_text(app_screen_t screen,
             } else if (row == ABOUT_ROW_CONTROLS) {
                 *icon = "nav";
                 *label = "Controls";
-                *desc = "Cross, Circle, Start, Triangle";
+                *desc = "Confirm, Back, START, Triangle";
             } else if (row == ABOUT_ROW_DATA_FOLDER) {
                 *icon = "save";
                 *label = "Data folder";
@@ -1306,6 +1418,8 @@ static void draw_current_rows(void)
                 row == SIMPLE_ROW_BASS ? g_control.band_gain_mdB[1] :
                 row == SIMPLE_ROW_MIDRANGE ? g_control.band_gain_mdB[4] : g_control.band_gain_mdB[7];
             eq_ui_draw_slider(i, row, row == selected, icon, label, desc, value, amount, kind, bounds);
+        } else if (g_screen == SCREEN_ADVANCED && row == ADV_ROW_PREAMP) {
+            eq_ui_draw_slider(i, row, row == selected, icon, label, desc, value, g_control.preamp_mdB, kind, bounds);
         } else if (g_screen == SCREEN_ADVANCED && row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
             int band = row - ADV_BAND_ROW_BASE;
             eq_ui_draw_slider(i, row, row == selected, icon, label, desc, value, g_control.band_gain_mdB[band], kind, bounds);
@@ -1315,18 +1429,36 @@ static void draw_current_rows(void)
     }
 }
 
+static eq_ui_row_kind_t selected_row_kind(void)
+{
+    const char *icon;
+    const char *label;
+    const char *desc;
+    eq_ui_row_kind_t kind;
+
+    row_text(g_screen, g_selected[g_screen], &icon, &label, &desc, &kind);
+    return kind;
+}
+
 static void render_frame(void)
 {
     char left[64];
     char right[64];
     char subtitle[96];
-    const char *footer_left = g_screen == SCREEN_HOME ? "Circle Exit" : "Circle Back";
+    char footer_left[32];
+    char footer_center[64];
+
+    ensure_selection_visible();
+    snprintf(footer_left, sizeof(footer_left), "%s %s",
+             button_name(g_cancel_button), g_screen == SCREEN_HOME ? "Exit" : "Back");
+    if (selected_row_kind() == EQ_UI_ROW_READONLY) {
+        snprintf(footer_center, sizeof(footer_center), "START Bypass");
+    } else {
+        snprintf(footer_center, sizeof(footer_center), "%s Select   START Bypass", button_name(g_confirm_button));
+    }
 
     if (g_plugin_compatible) {
-        int status_res = EqGetStatus(&g_status);
-        if (status_res < 0) {
-            set_message("Status failed (%d)", status_res);
-        }
+        poll_plugin_status();
     }
 
     snprintf(left, sizeof(left), "EQVita v%d.%d.%d", g_version.major, g_version.minor, g_version.patch);
@@ -1336,11 +1468,10 @@ static void render_frame(void)
              g_preset_slot + 1,
              eq_target_str());
 
-    ensure_selection_visible();
     eq_ui_begin_frame();
     eq_ui_draw_shell(screen_title(g_screen), g_screen == SCREEN_HOME ? subtitle : screen_subtitle(g_screen), left, right);
     draw_current_rows();
-    eq_ui_draw_footer(footer_left, "Cross Select   Start Bypass", "Triangle Help");
+    eq_ui_draw_footer(footer_left, footer_center, "Triangle Help");
     if (g_message_frames > 0 && g_message[0]) {
         eq_ui_draw_message(g_message);
         g_message_frames--;
@@ -1354,7 +1485,7 @@ static void adjust_current(int delta)
     switch (g_screen) {
         case SCREEN_PRESETS:
             if (row == PRESETS_ROW_SLOT) {
-                g_preset_slot = (g_preset_slot + (delta > 0 ? 1 : 2)) % 3;
+                adjust_preset_slot(delta > 0 ? 1 : -1);
             }
             break;
         case SCREEN_SIMPLE:
@@ -1362,13 +1493,15 @@ static void adjust_current(int delta)
             else if (row == SIMPLE_ROW_BASS) apply_simple_eq(g_control.band_gain_mdB[1] + delta, g_control.band_gain_mdB[4], g_control.band_gain_mdB[7], 1);
             else if (row == SIMPLE_ROW_MIDRANGE) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4] + delta, g_control.band_gain_mdB[7], 1);
             else if (row == SIMPLE_ROW_TREBLE) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4], g_control.band_gain_mdB[7] + delta, 1);
-            else if (row == SIMPLE_ROW_PRESET_SLOT) g_preset_slot = (g_preset_slot + (delta > 0 ? 1 : 2)) % 3;
+            else if (row == SIMPLE_ROW_PRESET_SLOT) adjust_preset_slot(delta > 0 ? 1 : -1);
             break;
         case SCREEN_ADVANCED:
-            if (row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
+            if (row == ADV_ROW_PREAMP) {
+                adjust_preamp(delta);
+            } else if (row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
                 adjust_band(row - ADV_BAND_ROW_BASE, delta);
             } else if (row == ADV_ROW_PRESET_SLOT) {
-                g_preset_slot = (g_preset_slot + (delta > 0 ? 1 : 2)) % 3;
+                adjust_preset_slot(delta > 0 ? 1 : -1);
             }
             break;
         case SCREEN_THEMES: {
@@ -1376,10 +1509,7 @@ static void adjust_current(int delta)
             break;
         }
         case SCREEN_SETTINGS:
-            if (row == SETTINGS_ROW_ENABLED) toggle_enabled();
-            else if (row == SETTINGS_ROW_SCOPE) toggle_speaker_only();
-            else if (row == SETTINGS_ROW_HPF) toggle_hpf();
-            else if (row == SETTINGS_ROW_HEADROOM) adjust_headroom_mode(delta > 0 ? 1 : -1);
+            if (row == SETTINGS_ROW_HEADROOM) adjust_headroom_mode(delta > 0 ? 1 : -1);
             break;
         default:
             break;
@@ -1426,6 +1556,7 @@ static void activate_current(void)
             else if (row == SETTINGS_ROW_SCOPE) toggle_speaker_only();
             else if (row == SETTINGS_ROW_HPF) toggle_hpf();
             else if (row == SETTINGS_ROW_HEADROOM) adjust_headroom_mode(1);
+            else if (row == SETTINGS_ROW_STARTUP) save_boot_state_with_message();
             break;
         default:
             break;
@@ -1534,7 +1665,10 @@ int main(void)
     SceCtrlData last = {0};
     int repeat_timer = 0;
     int last_buttons = 0;
+    eqvita_startup_source_t startup_source = EQVITA_STARTUP_SOURCE_DEFAULT;
 
+    eqvita_app_state_init(&g_app_state);
+    init_button_mapping();
     eq_ui_set_theme(load_theme_index());
     if (eq_ui_init() < 0) {
         return sceKernelExitProcess(1);
@@ -1544,24 +1678,41 @@ int main(void)
     g_touch_panel_ready = (sceTouchGetPanelInfo(SCE_TOUCH_PORT_FRONT, &g_touch_panel) >= 0);
 
     EqGetVersion(&g_version);
-    eq_control_init_defaults(&g_control);
-    g_control.enabled = 1;
     g_control.route_hint = (uint8_t)detect_route_user();
     g_plugin_compatible = (g_version.major == EQ_VERSION_MAJOR && g_version.minor == EQ_VERSION_MINOR);
+    g_app_state.plugin_compatible = (uint8_t)g_plugin_compatible;
     if (g_plugin_compatible) {
-        int load_res = load_preset();
-        if (load_res < 0) {
-            mark_dirty();
+        eq_control_t startup_control;
+        int startup_slot = 0;
+        eq_control_init_defaults(&startup_control);
+        if (eqvita_load_app_startup_control(EQVITA_DATA_DIR,
+                                            EQVITA_PRESET_SLOT_COUNT,
+                                            0,
+                                            &startup_control,
+                                            &startup_slot,
+                                            &startup_source) < 0) {
+            eq_control_init_defaults(&startup_control);
+            startup_slot = 0;
         }
+        eqvita_app_state_set_preset_slot(&g_app_state, startup_slot);
+        if (apply_control_candidate(&startup_control, 0) < 0) {
+            set_message("Plugin startup sync failed");
+        }
+        eqvita_app_state_mark_boot_saved(&g_app_state);
+        eqvita_app_state_mark_current_preset_saved(&g_app_state);
     } else {
         memset(&g_status, 0, sizeof(g_status));
         g_status.sample_rate = 48000;
         g_status.route = EQ_ROUTE_UNKNOWN;
         g_status.bypass_reason = EQ_BYPASS_DISABLED;
     }
-    app_log("start: version=%d.%d.%d compatible=%d route=%s",
+    app_log("---- run begin ----");
+    app_log("start: version=%d.%d.%d compatible=%d source=%s slot=%d route=%s",
         g_version.major, g_version.minor, g_version.patch,
-        g_plugin_compatible, route_str(g_control.route_hint));
+        g_plugin_compatible,
+        startup_source_str(g_plugin_compatible ? startup_source : EQVITA_STARTUP_SOURCE_DEFAULT),
+        g_preset_slot + 1,
+        route_str(g_control.route_hint));
 
     while (1) {
         SceCtrlData pad;
@@ -1569,7 +1720,6 @@ int main(void)
         int held;
         int active_input;
 
-        sceDisplayWaitVblankStartMulti(1);
         if (sceCtrlPeekBufferPositive(0, &pad, 1) < 0) {
             render_frame();
             continue;
@@ -1609,9 +1759,9 @@ int main(void)
             adjust_current(-STEP_COARSE);
         } else if (active_input & SCE_CTRL_RTRIGGER) {
             adjust_current(STEP_COARSE);
-        } else if (newly & SCE_CTRL_CROSS) {
+        } else if (newly & g_confirm_button) {
             activate_current();
-        } else if (newly & SCE_CTRL_CIRCLE) {
+        } else if (newly & g_cancel_button) {
             if (g_screen == SCREEN_HOME) {
                 break;
             }
@@ -1626,11 +1776,6 @@ int main(void)
         refresh_route_hint();
         render_frame();
         maybe_log_status();
-    }
-
-    if (g_plugin_compatible) {
-        save_preset();
-        save_boot_state();
     }
 
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_STOP);
