@@ -43,3 +43,13 @@ target_include_directories(test_port_registry PRIVATE
 target_link_libraries(test_port_registry PRIVATE m)
 
 add_test(NAME port_registry COMMAND test_port_registry)
+
+add_executable(test_app_help_text
+  test_app_help_text.c
+)
+
+target_compile_definitions(test_app_help_text PRIVATE
+  EQVITA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+add_test(NAME app_help_text COMMAND test_app_help_text)

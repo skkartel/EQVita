@@ -9,6 +9,8 @@
 /out/
 /dist/
 /release/
+/research/
+superpowers/
 CMakeUserPresets.json
 *.velf
 *.skprx

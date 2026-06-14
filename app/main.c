@@ -7,24 +7,25 @@
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/sysmem.h>
 #include <psp2/system_param.h>
+#include <psp2/touch.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 
-#include "debug_screen/debugScreen.h"
+#include "ui_vita.h"
 #include "../common/eq_shared.h"
 
-#define X_MARGIN 16
-#define Y_MARGIN 16
-#define UI_BUF 512
 #define STEP_FINE 500
 #define STEP_COARSE 1000
 #define PRESET_SYNC_FAILED -4
 #define PRESET_PATH_FMT "ur0:data/eqvita/preset%d.eqvp"
 #define LEGACY_PRESET_PATH_FMT "ur0:data/eqvita/preset%d.bin"
 #define BOOT_STATE_PATH "ur0:data/eqvita/boot.eqbs"
+#define THEME_PATH "ur0:data/eqvita/theme.cfg"
 #define APP_LOG_PATH "ur0:data/eqvita/app.log"
 #define STATUS_LOG_INTERVAL_FRAMES 60
+#define THEME_FILE_MAGIC 0x4d545145u
+#define THEME_FILE_VERSION 1u
 
 #define SCE_AVCONFIG_VOLCTRL_ONBOARD 1
 #define SCE_AVCONFIG_VOLCTRL_BLUETOOTH 2
@@ -36,44 +37,208 @@
 int sceAVConfigGetConnectedAudioDevice(uint32_t *flags);
 int sceAVConfigGetVolCtrlEnable(uint32_t *volCtrl, int *muted, int *avls);
 
-// Colors
-#define COL_RESET "\e[0m"
-#define COL_HEADER "\e[1;36m"
-#define COL_SECTION "\e[1;33m"
-#define COL_SELECTED "\e[7m"
-#define COL_VALUE "\e[1;37m"
-#define COL_METER_L "\e[32m"
-#define COL_METER_M "\e[33m"
-#define COL_METER_H "\e[31m"
+typedef enum app_screen
+{
+    SCREEN_HOME = 0,
+    SCREEN_STATUS,
+    SCREEN_PRESETS,
+    SCREEN_SIMPLE,
+    SCREEN_ADVANCED,
+    SCREEN_THEMES,
+    SCREEN_SETTINGS,
+    SCREEN_ABOUT,
+    SCREEN_COUNT
+} app_screen_t;
 
 static const char *band_labels[EQ_BANDS] = {
-    "31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"
+    "31 Hz", "62 Hz", "125 Hz", "250 Hz", "500 Hz", "1 kHz", "2 kHz", "4 kHz", "8 kHz", "16 kHz"
 };
+
+#define STATUS_ROW_EQ_STATUS 0
+#define STATUS_ROW_OUTPUT 1
+#define STATUS_ROW_PRESET 2
+#define STATUS_ROW_PLUGIN 3
+#define STATUS_ROW_LEVELS_SECTION 4
+#define STATUS_ROW_CLIPPING 5
+#define STATUS_ROW_PEAK 6
+#define STATUS_ROW_AUDIO_RATE 7
+#define STATUS_ROW_DIAGNOSTICS_SECTION 8
+#define STATUS_ROW_STREAMS 9
+#define STATUS_ROW_SKIPPED 10
+#define STATUS_ROW_UNKNOWN 11
+#define STATUS_ROW_LAST_BLOCK 12
+#define STATUS_ROW_SLOWEST_BLOCK 13
+#define STATUS_ROW_BLOCKS 14
+#define STATUS_ROW_COUNT 15
+
+#define PRESETS_ROW_SLOT 0
+#define PRESETS_ROW_STOCK_DEPTH 1
+#define PRESETS_ROW_MOD_SWITCH 2
+#define PRESETS_ROW_ACTIONS_SECTION 3
+#define PRESETS_ROW_SAVE 4
+#define PRESETS_ROW_LOAD 5
+#define PRESETS_ROW_RESET 6
+#define PRESETS_ROW_COUNT 7
+
+#define SIMPLE_ROW_PREAMP 0
+#define SIMPLE_ROW_BASS 1
+#define SIMPLE_ROW_MIDRANGE 2
+#define SIMPLE_ROW_TREBLE 3
+#define SIMPLE_ROW_PRESET_SECTION 4
+#define SIMPLE_ROW_PRESET_SLOT 5
+#define SIMPLE_ROW_SAVE_CURRENT 6
+#define SIMPLE_ROW_SAVE_NEXT 7
+#define SIMPLE_ROW_UNDO_ENTRY 8
+#define SIMPLE_ROW_RESET_EQ 9
+#define SIMPLE_ROW_COUNT 10
+
+#define ADV_BAND_ROW_BASE 0
+#define ADV_ROW_PRESET_SECTION (ADV_BAND_ROW_BASE + EQ_BANDS)
+#define ADV_ROW_PRESET_SLOT (ADV_ROW_PRESET_SECTION + 1)
+#define ADV_ROW_SAVE_CURRENT (ADV_ROW_PRESET_SECTION + 2)
+#define ADV_ROW_SAVE_NEXT (ADV_ROW_PRESET_SECTION + 3)
+#define ADV_ROW_UNDO_ENTRY (ADV_ROW_PRESET_SECTION + 4)
+#define ADV_ROW_RESET_EQ (ADV_ROW_PRESET_SECTION + 5)
+#define ADVANCED_ROW_COUNT (ADV_ROW_PRESET_SECTION + 6)
+
+#define SETTINGS_ROW_ENABLED 0
+#define SETTINGS_ROW_SCOPE 1
+#define SETTINGS_ROW_HPF 2
+#define SETTINGS_ROW_SAFETY_SECTION 3
+#define SETTINGS_ROW_HEADROOM 4
+#define SETTINGS_ROW_ROUTE 5
+#define SETTINGS_ROW_STARTUP 6
+#define SETTINGS_ROW_COUNT 7
+
+#define ABOUT_ROW_CREATOR 0
+#define ABOUT_ROW_REPOSITORY 1
+#define ABOUT_ROW_LOG_FILE 2
+#define ABOUT_ROW_WHAT 3
+#define ABOUT_ROW_VERSION 4
+#define ABOUT_ROW_PLUGIN 5
+#define ABOUT_ROW_EQ_SECTION 6
+#define ABOUT_ROW_PRESETS 7
+#define ABOUT_ROW_SIMPLE 8
+#define ABOUT_ROW_ADVANCED 9
+#define ABOUT_ROW_PREAMP 10
+#define ABOUT_ROW_HPF 11
+#define ABOUT_ROW_OUTPUT_SECTION 12
+#define ABOUT_ROW_SPEAKERS 13
+#define ABOUT_ROW_ALL_OUTPUTS 14
+#define ABOUT_ROW_BYPASS 15
+#define ABOUT_ROW_DISTORTION 16
+#define ABOUT_ROW_CONTROLS_SECTION 17
+#define ABOUT_ROW_CONTROLS 18
+#define ABOUT_ROW_DATA_FOLDER 19
+#define ABOUT_ROW_COUNT 20
 
 static eq_control_t g_control;
 static eq_status_t g_status;
 static eq_version_t g_version;
-static int g_selected = 0;
 static int g_preset_slot = 0;
-static int g_scroll_top = 0;
-static int g_view_mode = 0;
 static int g_plugin_compatible = 0;
 static char g_message[96];
 static int g_message_frames = 0;
 static uint32_t g_status_log_frames = 0;
 
-static int clamp(int v, int lo, int hi) {
+static app_screen_t g_screen = SCREEN_HOME;
+static int g_selected[SCREEN_COUNT];
+static int g_scroll_top[SCREEN_COUNT];
+static eq_control_t g_eq_entry_control;
+static int g_eq_entry_valid = 0;
+static eq_ui_row_bounds_t g_row_bounds[EQ_UI_MAX_VISIBLE_ROWS];
+static int g_row_bound_count = 0;
+
+static SceTouchPanelInfo g_touch_panel;
+static int g_touch_panel_ready = 0;
+static int g_touch_down = 0;
+static int g_touch_start_x = 0;
+static int g_touch_start_y = 0;
+static int g_touch_last_y = 0;
+static int g_touch_moved = 0;
+
+static int clamp(int v, int lo, int hi)
+{
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
 }
 
-static void ensure_data_dir(void) {
+static void ensure_data_dir(void)
+{
     sceIoMkdir("ur0:data", 0777);
     sceIoMkdir("ur0:data/eqvita", 0777);
 }
 
-static void app_log(const char *fmt, ...) {
+typedef struct app_theme_file
+{
+    uint32_t magic;
+    uint32_t version;
+    uint32_t theme_index;
+    uint32_t checksum;
+} app_theme_file_t;
+
+static uint32_t theme_file_checksum(uint32_t theme_index)
+{
+    return THEME_FILE_MAGIC ^ THEME_FILE_VERSION ^ theme_index ^ 0x45515448u;
+}
+
+static int load_theme_index(void)
+{
+    app_theme_file_t file;
+    SceUID fd = sceIoOpen(THEME_PATH, SCE_O_RDONLY, 0);
+    int read_res;
+
+    if (fd < 0) {
+        return EQ_UI_DEFAULT_THEME_INDEX;
+    }
+
+    read_res = sceIoRead(fd, &file, sizeof(file));
+    sceIoClose(fd);
+
+    if (read_res != (int)sizeof(file) ||
+        file.magic != THEME_FILE_MAGIC ||
+        file.version != THEME_FILE_VERSION ||
+        file.checksum != theme_file_checksum(file.theme_index) ||
+        file.theme_index >= (uint32_t)eq_ui_theme_count()) {
+        return EQ_UI_DEFAULT_THEME_INDEX;
+    }
+
+    return (int)file.theme_index;
+}
+
+static int save_theme_index(int index)
+{
+    app_theme_file_t file;
+    SceUID fd;
+    int written;
+    int close_res;
+
+    if (index < 0 || index >= eq_ui_theme_count()) {
+        index = EQ_UI_DEFAULT_THEME_INDEX;
+    }
+
+    ensure_data_dir();
+    file.magic = THEME_FILE_MAGIC;
+    file.version = THEME_FILE_VERSION;
+    file.theme_index = (uint32_t)index;
+    file.checksum = theme_file_checksum(file.theme_index);
+
+    fd = sceIoOpen(THEME_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+    if (fd < 0) {
+        return fd;
+    }
+
+    written = sceIoWrite(fd, &file, sizeof(file));
+    close_res = sceIoClose(fd);
+    if (written != (int)sizeof(file)) {
+        return written < 0 ? written : -1;
+    }
+    return close_res;
+}
+
+static void app_log(const char *fmt, ...)
+{
     char line[256];
     va_list ap;
     int len;
@@ -100,21 +265,23 @@ static void app_log(const char *fmt, ...) {
     sceIoClose(fd);
 }
 
-static const char *route_str(uint8_t r) {
+static const char *route_str(uint8_t r)
+{
     switch (r) {
-        case EQ_ROUTE_SPEAKER: return "Speaker";
-        case EQ_ROUTE_HEADPHONES: return "Headphones";
+        case EQ_ROUTE_SPEAKER: return "Speakers";
+        case EQ_ROUTE_HEADPHONES: return "Wired";
         case EQ_ROUTE_BLUETOOTH: return "Bluetooth";
         default: return "Unknown";
     }
 }
 
-static const char *bypass_reason_str(uint8_t r) {
+static const char *bypass_reason_str(uint8_t r)
+{
     switch (r) {
         case EQ_BYPASS_NONE: return "Active";
         case EQ_BYPASS_DISABLED: return "Disabled";
-        case EQ_BYPASS_SPEAKER_ONLY: return "Speaker-only";
-        case EQ_BYPASS_UNKNOWN_ROUTE: return "Unknown route";
+        case EQ_BYPASS_SPEAKER_ONLY: return "Waiting for speakers";
+        case EQ_BYPASS_UNKNOWN_ROUTE: return "Unknown output";
         case EQ_BYPASS_INVALID_PORT: return "Invalid port";
         case EQ_BYPASS_BUFFER_TOO_LARGE: return "Large buffer";
         case EQ_BYPASS_COPY_FAILED: return "Copy failed";
@@ -124,16 +291,27 @@ static const char *bypass_reason_str(uint8_t r) {
     }
 }
 
-static const char *headroom_mode_str(uint8_t mode) {
+static const char *headroom_mode_str(uint8_t mode)
+{
     switch (mode) {
-        case EQ_HEADROOM_LOUD: return "LOUD";
-        case EQ_HEADROOM_RAW: return "RAW ";
+        case EQ_HEADROOM_LOUD: return "Loud";
+        case EQ_HEADROOM_RAW: return "Direct";
         case EQ_HEADROOM_SAFE:
-        default: return "SAFE";
+        default: return "Safe";
     }
 }
 
-static void set_message(const char *fmt, ...) {
+static const char *eq_target_str(void)
+{
+    return g_control.speaker_only ? "Speakers" : "All outputs";
+}
+
+static int save_preset(void);
+static int save_boot_state(void);
+static void persist_current_settings_quietly(void);
+
+static void set_message(const char *fmt, ...)
+{
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(g_message, sizeof(g_message), fmt, ap);
@@ -142,7 +320,28 @@ static void set_message(const char *fmt, ...) {
     app_log("message: %s", g_message);
 }
 
-static eq_route_t detect_route_user(void) {
+static void apply_theme_index(int index)
+{
+    int set_res;
+    int save_res;
+
+    if (index < 0 || index >= eq_ui_theme_count()) {
+        index = EQ_UI_DEFAULT_THEME_INDEX;
+    }
+
+    set_res = eq_ui_set_theme(index);
+    save_res = save_theme_index(index);
+    if (set_res < 0) {
+        set_message("Theme changed, icon sheet missing");
+    } else if (save_res < 0) {
+        set_message("Theme changed, save failed (%d)", save_res);
+    } else {
+        set_message("Theme: %s", eq_ui_theme_name(index));
+    }
+}
+
+static eq_route_t detect_route_user(void)
+{
     uint32_t flags = 0;
     uint32_t vol_ctrl = 0;
     int muted = 0;
@@ -180,13 +379,14 @@ static eq_route_t detect_route_user(void) {
     return EQ_ROUTE_UNKNOWN;
 }
 
-static void maybe_log_status(void) {
+static void maybe_log_status(void)
+{
     static uint32_t last_counter = 0;
     static uint8_t last_route = 0xffu;
     static uint8_t last_reason = 0xffu;
     static uint8_t last_active = 0xffu;
-    int changed = 0;
-    int force_log = 0;
+    int changed;
+    int force_log;
 
     if (!g_plugin_compatible) {
         return;
@@ -199,8 +399,7 @@ static void maybe_log_status(void) {
         g_status.bypass_reason != last_reason ||
         g_status.eq_active != last_active);
 
-    if (g_status_log_frames < STATUS_LOG_INTERVAL_FRAMES &&
-        !changed) {
+    if (g_status_log_frames < STATUS_LOG_INTERVAL_FRAMES && !changed) {
         return;
     }
 
@@ -231,75 +430,64 @@ static void maybe_log_status(void) {
     }
 }
 
-static void ui_init(void) {
-    PsvDebugScreenFont *font = psvDebugScreenGetFont();
-    font = psvDebugScreenScaleFont2x(font);
-    psvDebugScreenSetFont(font);
-    psvDebugScreenSetBgColor(0x000000);
-    psvDebugScreenSetFgColor(0xFFFFFF);
+static int mark_dirty(void)
+{
+    int set_res;
+    int status_res;
 
-    // Control defaults are initialized in main before plugin sync.
-}
-
-static void ui_reset(void) {
-    psvDebugScreenBlank(0x00);
-    psvDebugScreenSetCoordsXY((int[]){X_MARGIN}, (int[]){Y_MARGIN});
-}
-
-static void ui_line(const char *fmt, ...) {
-    char buf[UI_BUF];
-    va_list ap;
-    va_start(ap, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    psvDebugScreenPuts(buf);
-}
-
-static int mark_dirty(void) {
     if (!g_plugin_compatible) {
         return -1;
     }
+
     g_control.route_hint = (uint8_t)detect_route_user();
     g_control.dirty_counter++;
-    int set_res = EqSetControl(&g_control);
-    int status_res = (set_res >= 0) ? EqGetStatus(&g_status) : -1;
+    set_res = EqSetControl(&g_control);
+    status_res = (set_res >= 0) ? EqGetStatus(&g_status) : -1;
     if (set_res < 0 || status_res < 0) {
         set_message("Plugin communication failed (%d/%d)", set_res, status_res);
     }
     return set_res;
 }
 
-static void refresh_route_hint(void) {
+static void refresh_route_hint(void)
+{
+    uint8_t route;
     if (!g_plugin_compatible) {
         return;
     }
-    uint8_t route = (uint8_t)detect_route_user();
+
+    route = (uint8_t)detect_route_user();
     if (g_control.route_hint != route) {
         g_control.route_hint = route;
         g_control.dirty_counter++;
-        int res = EqSetControl(&g_control);
-        if (res < 0) {
-            set_message("Route update failed (%d)", res);
+        if (EqSetControl(&g_control) < 0) {
+            set_message("Route update failed");
         }
     }
 }
 
-static void toggle_enabled(void) {
+static void toggle_enabled(void)
+{
     g_control.enabled = !g_control.enabled;
     mark_dirty();
 }
 
-static void toggle_speaker_only(void) {
+static void toggle_speaker_only(void)
+{
     g_control.speaker_only = !g_control.speaker_only;
-    mark_dirty();
+    if (mark_dirty() == 0) {
+        persist_current_settings_quietly();
+    }
 }
 
-static void toggle_hpf(void) {
+static void toggle_hpf(void)
+{
     eq_control_set_hpf_enabled(&g_control, !eq_control_hpf_enabled(&g_control));
     mark_dirty();
 }
 
-static void adjust_headroom_mode(int delta) {
+static void adjust_headroom_mode(int delta)
+{
     int mode = (int)eq_control_get_headroom_mode(&g_control) + delta;
     if (mode < 0) mode = EQ_HEADROOM_RAW;
     if (mode > EQ_HEADROOM_RAW) mode = EQ_HEADROOM_SAFE;
@@ -307,60 +495,82 @@ static void adjust_headroom_mode(int delta) {
     mark_dirty();
 }
 
-static void adjust_preamp(int delta) {
+static void adjust_preamp(int delta)
+{
     int v = g_control.preamp_mdB + delta;
     g_control.preamp_mdB = clamp(v, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
     mark_dirty();
 }
 
-static void adjust_band(int idx, int delta) {
+static void adjust_band(int idx, int delta)
+{
     int v = g_control.band_gain_mdB[idx] + delta;
     g_control.band_gain_mdB[idx] = clamp(v, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
     mark_dirty();
 }
 
-static int save_preset(void) {
-    ensure_data_dir();
+static int save_preset(void)
+{
     char path[64];
+    SceUID fd;
+    eq_preset_file_t preset;
+    int written;
+    int close_res;
+
+    ensure_data_dir();
     snprintf(path, sizeof(path), PRESET_PATH_FMT, g_preset_slot);
-    SceUID fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+    fd = sceIoOpen(path, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
     if (fd < 0) return fd;
 
-    eq_preset_file_t preset;
     eq_preset_build(&preset, &g_control);
-    int written = sceIoWrite(fd, &preset, sizeof(preset));
-    int close_res = sceIoClose(fd);
+    written = sceIoWrite(fd, &preset, sizeof(preset));
+    close_res = sceIoClose(fd);
     if (written != (int)sizeof(preset)) {
         return written < 0 ? written : -1;
     }
     return close_res;
 }
 
-static int save_boot_state(void) {
-    ensure_data_dir();
+static int save_boot_state(void)
+{
     eq_control_t boot_control = g_control;
-    boot_control.route_hint = (uint8_t)detect_route_user();
+    SceUID fd;
+    eq_boot_state_file_t state;
+    int written;
+    int close_res;
 
-    SceUID fd = sceIoOpen(BOOT_STATE_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+    ensure_data_dir();
+    boot_control.route_hint = (uint8_t)detect_route_user();
+    fd = sceIoOpen(BOOT_STATE_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
     if (fd < 0) return fd;
 
-    eq_boot_state_file_t state;
     eq_boot_state_build(&state, &boot_control);
-    int written = sceIoWrite(fd, &state, sizeof(state));
-    int close_res = sceIoClose(fd);
+    written = sceIoWrite(fd, &state, sizeof(state));
+    close_res = sceIoClose(fd);
     if (written != (int)sizeof(state)) {
         return written < 0 ? written : -1;
     }
     return close_res;
 }
 
-static int load_preset(void) {
+static void persist_current_settings_quietly(void)
+{
+    int preset_res = save_preset();
+    int boot_res = preset_res >= 0 ? save_boot_state() : preset_res;
+    if (preset_res < 0 || boot_res < 0) {
+        set_message("Save failed (%d/%d)", preset_res, boot_res);
+    }
+}
+
+static int load_preset(void)
+{
     char path[64];
     eq_control_t previous = g_control;
     eq_preset_primary_status_t primary_status = EQ_PRESET_PRIMARY_MISSING;
+    SceUID fd;
 
     snprintf(path, sizeof(path), PRESET_PATH_FMT, g_preset_slot);
-    SceUID fd = sceIoOpen(path, SCE_O_RDONLY, 0);
+    fd = sceIoOpen(path, SCE_O_RDONLY, 0);
     if (fd >= 0) {
         eq_preset_file_t preset;
         eq_control_t loaded;
@@ -402,34 +612,53 @@ static int load_preset(void) {
     return fd;
 }
 
-static void save_preset_with_message(void) {
+static void save_preset_with_message(void)
+{
     int res = save_preset();
     if (res >= 0) {
         int boot_res = save_boot_state();
         if (boot_res >= 0) {
             set_message("Saved preset %d", g_preset_slot + 1);
         } else {
-            set_message("Saved preset %d, boot save failed (%d)", g_preset_slot + 1, boot_res);
+            set_message("Preset saved, boot state failed");
         }
     } else {
         set_message("Save failed (%d)", res);
     }
 }
 
-static void load_preset_with_message(void) {
+static void save_as_next_preset(void)
+{
+    g_preset_slot = (g_preset_slot + 1) % 3;
+    save_preset_with_message();
+}
+
+static void load_preset_with_message(void)
+{
     int res = load_preset();
     if (res > 0) {
         set_message("Imported legacy preset %d", g_preset_slot + 1);
     } else if (res == 0) {
         set_message("Loaded preset %d", g_preset_slot + 1);
-    } else if (res == PRESET_SYNC_FAILED) {
-        /* mark_dirty already reported the plugin communication failure. */
-    } else {
+    } else if (res != PRESET_SYNC_FAILED) {
         set_message("Load failed (%d)", res);
     }
 }
 
-static void reset_defaults(void) {
+static void restore_eq_entry(void)
+{
+    if (!g_eq_entry_valid) {
+        set_message("No edits to undo");
+        return;
+    }
+    g_control = g_eq_entry_control;
+    if (mark_dirty() == 0) {
+        set_message("Restored screen entry settings");
+    }
+}
+
+static void reset_defaults(void)
+{
     g_control.preamp_mdB = EQ_DEFAULT_PREAMP_MDB;
     for (int i = 0; i < EQ_BANDS; ++i) {
         g_control.band_gain_mdB[i] = 0;
@@ -437,7 +666,8 @@ static void reset_defaults(void) {
     mark_dirty();
 }
 
-static void apply_simple_eq(int bass, int mid, int treble, int auto_preamp) {
+static void apply_simple_eq(int bass, int mid, int treble, int auto_preamp)
+{
     bass = clamp(bass, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
     mid = clamp(mid, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
     treble = clamp(treble, -EQ_MAX_ABS_GAIN_MDB, EQ_MAX_ABS_GAIN_MDB);
@@ -458,7 +688,8 @@ static void apply_simple_eq(int bass, int mid, int treble, int auto_preamp) {
     mark_dirty();
 }
 
-static void apply_preset_stock_depth(void) {
+static void apply_preset_stock_depth(void)
+{
     g_control.preamp_mdB = -4000;
     g_control.band_gain_mdB[0] = 0;
     for (int i = 1; i <= 3; ++i) g_control.band_gain_mdB[i] = 4000;
@@ -469,7 +700,8 @@ static void apply_preset_stock_depth(void) {
     }
 }
 
-static void apply_preset_mod_switch(void) {
+static void apply_preset_mod_switch(void)
+{
     static const int32_t gains[EQ_BANDS] = {
         3000, 4000, 4500, 4500, -5000,
         -5000, -5000, -2500, -2500, -3000
@@ -488,191 +720,830 @@ static void apply_preset_mod_switch(void) {
     }
 }
 
-static void draw_bar(int mdB) {
-    int val = mdB / 1000;
-    if (val < -12) val = -12;
-    if (val > 12) val = 12;
-    
-    char bar[22];
-    memset(bar, ' ', 21);
-    bar[21] = 0;
-    bar[10] = '|';
-
-    if (val > 0) {
-        int len = (val * 10) / 12;
-        for (int i = 0; i < len; ++i) bar[11 + i] = '=';
-    } else if (val < 0) {
-        int len = (-val * 10) / 12;
-        for (int i = 0; i < len; ++i) bar[9 - i] = '=';
-    }
-    
-    psvDebugScreenPuts("[");
-    psvDebugScreenPuts(bar);
-    psvDebugScreenPuts("]");
+static void format_db(char *out, size_t out_size, int32_t mdB)
+{
+    snprintf(out, out_size, "%+0.1f dB", mdB / 1000.0f);
 }
 
-static void draw_meter_colored(uint16_t peak) {
-    int val = (peak * 20) / 32767;
-    if (val > 20) val = 20;
-    
-    psvDebugScreenPuts("[");
-    for (int i = 0; i < 20; ++i) {
-        if (i < val) {
-            if (i < 12) psvDebugScreenPuts(COL_METER_L "#");
-            else if (i < 16) psvDebugScreenPuts(COL_METER_M "#");
-            else psvDebugScreenPuts(COL_METER_H "#");
-        } else {
-            psvDebugScreenPuts(" ");
+static const char *screen_title(app_screen_t screen)
+{
+    switch (screen) {
+        case SCREEN_STATUS: return "Telemetry";
+        case SCREEN_PRESETS: return "Presets";
+        case SCREEN_SIMPLE: return "Simple EQ";
+        case SCREEN_ADVANCED: return "Advanced EQ";
+        case SCREEN_THEMES: return "Themes";
+        case SCREEN_SETTINGS: return "Settings";
+        case SCREEN_ABOUT: return "Help";
+        case SCREEN_HOME:
+        default: return "EQVita";
+    }
+}
+
+static const char *screen_subtitle(app_screen_t screen)
+{
+    switch (screen) {
+        case SCREEN_STATUS: return "Live output and app status";
+        case SCREEN_PRESETS: return "Choose or save sound profiles";
+        case SCREEN_SIMPLE: return "Adjust bass, mids, treble";
+        case SCREEN_ADVANCED: return "Fine tune 10 bands";
+        case SCREEN_THEMES: return "Choose the app color style";
+        case SCREEN_SETTINGS: return "Choose where EQ applies";
+        case SCREEN_ABOUT: return "Controls, version, and help";
+        case SCREEN_HOME:
+        default: return "Output - EQ status - preset slot";
+    }
+}
+
+static app_screen_t home_screen_for_row(int row)
+{
+    switch (row) {
+        case 1: return SCREEN_SIMPLE;
+        case 2: return SCREEN_ADVANCED;
+        case 3: return SCREEN_PRESETS;
+        case 4: return SCREEN_THEMES;
+        case 5: return SCREEN_SETTINGS;
+        case 6: return SCREEN_STATUS;
+        case 7: return SCREEN_ABOUT;
+        default: return SCREEN_HOME;
+    }
+}
+
+static int current_row_count(void)
+{
+    switch (g_screen) {
+        case SCREEN_HOME: return 8;
+        case SCREEN_STATUS: return STATUS_ROW_COUNT;
+        case SCREEN_PRESETS: return PRESETS_ROW_COUNT;
+        case SCREEN_SIMPLE: return SIMPLE_ROW_COUNT;
+        case SCREEN_ADVANCED: return ADVANCED_ROW_COUNT;
+        case SCREEN_THEMES: return eq_ui_theme_count();
+        case SCREEN_SETTINGS: return SETTINGS_ROW_COUNT;
+        case SCREEN_ABOUT: return ABOUT_ROW_COUNT;
+        default: return 0;
+    }
+}
+
+static int row_is_section(app_screen_t screen, int row)
+{
+    switch (screen) {
+        case SCREEN_STATUS:
+            return row == STATUS_ROW_LEVELS_SECTION ||
+                   row == STATUS_ROW_DIAGNOSTICS_SECTION;
+        case SCREEN_PRESETS:
+            return row == PRESETS_ROW_ACTIONS_SECTION;
+        case SCREEN_SIMPLE:
+            return row == SIMPLE_ROW_PRESET_SECTION;
+        case SCREEN_ADVANCED:
+            return row == ADV_ROW_PRESET_SECTION;
+        case SCREEN_SETTINGS:
+            return row == SETTINGS_ROW_SAFETY_SECTION;
+        case SCREEN_ABOUT:
+            return row == ABOUT_ROW_EQ_SECTION ||
+                   row == ABOUT_ROW_OUTPUT_SECTION ||
+                   row == ABOUT_ROW_CONTROLS_SECTION;
+        default:
+            return 0;
+    }
+}
+
+static int row_is_selectable(app_screen_t screen, int row)
+{
+    return !row_is_section(screen, row);
+}
+
+static int visible_row_capacity(void)
+{
+    return (EQ_UI_FOOTER_Y - EQ_UI_LIST_Y - 8) / (EQ_UI_ROW_H + EQ_UI_ROW_GAP);
+}
+
+static void ensure_selection_visible(void)
+{
+    int count = current_row_count();
+    int visible = visible_row_capacity();
+    int *selected = &g_selected[g_screen];
+    int *scroll = &g_scroll_top[g_screen];
+
+    if (count <= 0) {
+        *selected = 0;
+        *scroll = 0;
+        return;
+    }
+
+    if (*selected < 0) *selected = 0;
+    if (*selected >= count) *selected = count - 1;
+    if (!row_is_selectable(g_screen, *selected)) {
+        if (*selected + 1 < count) {
+            (*selected)++;
+        } else if (*selected > 0) {
+            (*selected)--;
         }
     }
-    psvDebugScreenPuts(COL_RESET "]");
+    if (*scroll < 0) *scroll = 0;
+    if (*scroll > count - visible) *scroll = count > visible ? count - visible : 0;
+    if (*selected < *scroll) *scroll = *selected;
+    if (*selected >= *scroll + visible) *scroll = *selected - visible + 1;
 }
 
-static void ui_render(void) {
-    ui_reset();
-    
-    // Header
-    ui_line(COL_HEADER "EQ Vita v%d.%d.%d [%s MODE]" COL_RESET "\n", 
-        g_version.major, g_version.minor, g_version.patch, 
-        g_view_mode == 0 ? "SIMPLE" : "ADVANCED");
-    
-    // Status Line
+static void change_screen(app_screen_t screen)
+{
+    if (screen >= SCREEN_COUNT) {
+        return;
+    }
+    if ((screen == SCREEN_SIMPLE || screen == SCREEN_ADVANCED) && g_screen != screen) {
+        g_eq_entry_control = g_control;
+        g_eq_entry_valid = 1;
+    }
+    if (screen == SCREEN_THEMES) {
+        g_selected[screen] = eq_ui_theme_index();
+    }
+    g_screen = screen;
+    ensure_selection_visible();
+}
+
+static void move_selection(int delta)
+{
+    int count = current_row_count();
+    int *selected = &g_selected[g_screen];
+    int next;
+    if (count <= 0) {
+        return;
+    }
+    next = *selected;
+    for (int i = 0; i < count; ++i) {
+        next = (next + delta + count) % count;
+        if (row_is_selectable(g_screen, next)) {
+            *selected = next;
+            break;
+        }
+    }
+    ensure_selection_visible();
+}
+
+static void scroll_current(int delta)
+{
+    int count = current_row_count();
+    int visible = visible_row_capacity();
+    int max_scroll = count > visible ? count - visible : 0;
+    g_scroll_top[g_screen] = clamp(g_scroll_top[g_screen] + delta, 0, max_scroll);
+    g_selected[g_screen] = clamp(g_selected[g_screen], g_scroll_top[g_screen],
+                                 g_scroll_top[g_screen] + visible - 1);
+    ensure_selection_visible();
+}
+
+static void row_value(char *value, size_t value_size, app_screen_t screen, int row)
+{
+    value[0] = 0;
+    switch (screen) {
+        case SCREEN_HOME:
+            if (row == 0) snprintf(value, value_size, "%s", g_control.enabled ? "On" : "Off");
+            else if (row == 3) snprintf(value, value_size, "Slot %d", g_preset_slot + 1);
+            else if (row == 4) snprintf(value, value_size, "%s", eq_ui_theme_name(eq_ui_theme_index()));
+            break;
+        case SCREEN_STATUS:
+            if (row == STATUS_ROW_EQ_STATUS) snprintf(value, value_size, "%s", g_control.enabled ? (g_status.eq_active ? "Active" : bypass_reason_str(g_status.bypass_reason)) : "Off");
+            else if (row == STATUS_ROW_OUTPUT) snprintf(value, value_size, "%s", route_str(g_status.route));
+            else if (row == STATUS_ROW_PRESET) snprintf(value, value_size, "Slot %d", g_preset_slot + 1);
+            else if (row == STATUS_ROW_PLUGIN) snprintf(value, value_size, "%s", g_plugin_compatible ? "Ready" : "Mismatch");
+            else if (row == STATUS_ROW_CLIPPING) snprintf(value, value_size, "%d", g_status.clip_events);
+            else if (row == STATUS_ROW_PEAK) snprintf(value, value_size, "%u / %u", g_status.peak_l, g_status.peak_r);
+            else if (row == STATUS_ROW_AUDIO_RATE) snprintf(value, value_size, "%u Hz", g_status.sample_rate);
+            else if (row == STATUS_ROW_STREAMS) snprintf(value, value_size, "%u", g_status.debug_active_ports);
+            else if (row == STATUS_ROW_SKIPPED) snprintf(value, value_size, "%u", g_status.debug_busy_bypass_count);
+            else if (row == STATUS_ROW_UNKNOWN) snprintf(value, value_size, "%u", g_status.debug_unknown_port_count);
+            else if (row == STATUS_ROW_LAST_BLOCK) snprintf(value, value_size, "%u us", g_status.debug_last_us);
+            else if (row == STATUS_ROW_SLOWEST_BLOCK) snprintf(value, value_size, "%u us", g_status.debug_max_us);
+            else if (row == STATUS_ROW_BLOCKS) snprintf(value, value_size, "%u", g_status.debug_run_count);
+            break;
+        case SCREEN_PRESETS:
+            if (row == PRESETS_ROW_SLOT) snprintf(value, value_size, "Slot %d", g_preset_slot + 1);
+            break;
+        case SCREEN_SIMPLE:
+            if (row == SIMPLE_ROW_PREAMP) format_db(value, value_size, g_control.preamp_mdB);
+            else if (row == SIMPLE_ROW_BASS) format_db(value, value_size, g_control.band_gain_mdB[1]);
+            else if (row == SIMPLE_ROW_MIDRANGE) format_db(value, value_size, g_control.band_gain_mdB[4]);
+            else if (row == SIMPLE_ROW_TREBLE) format_db(value, value_size, g_control.band_gain_mdB[7]);
+            else if (row == SIMPLE_ROW_PRESET_SLOT) snprintf(value, value_size, "Slot %d", g_preset_slot + 1);
+            else if (row == SIMPLE_ROW_SAVE_NEXT) snprintf(value, value_size, "Slot %d", ((g_preset_slot + 1) % 3) + 1);
+            break;
+        case SCREEN_ADVANCED:
+            if (row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
+                format_db(value, value_size, g_control.band_gain_mdB[row - ADV_BAND_ROW_BASE]);
+            } else if (row == ADV_ROW_PRESET_SLOT) {
+                snprintf(value, value_size, "Slot %d", g_preset_slot + 1);
+            } else if (row == ADV_ROW_SAVE_NEXT) {
+                snprintf(value, value_size, "Slot %d", ((g_preset_slot + 1) % 3) + 1);
+            }
+            break;
+        case SCREEN_THEMES:
+            if (row == eq_ui_theme_index()) snprintf(value, value_size, "Active");
+            break;
+        case SCREEN_SETTINGS:
+            if (row == SETTINGS_ROW_ENABLED) snprintf(value, value_size, "%s", g_control.enabled ? "On" : "Off");
+            else if (row == SETTINGS_ROW_SCOPE) snprintf(value, value_size, "%s", eq_target_str());
+            else if (row == SETTINGS_ROW_HPF) snprintf(value, value_size, "%s", eq_control_hpf_enabled(&g_control) ? "On" : "Off");
+            else if (row == SETTINGS_ROW_HEADROOM) snprintf(value, value_size, "%s", headroom_mode_str(eq_control_get_headroom_mode(&g_control)));
+            else if (row == SETTINGS_ROW_ROUTE) snprintf(value, value_size, "%s", route_str(g_control.route_hint));
+            else if (row == SETTINGS_ROW_STARTUP) snprintf(value, value_size, "Saved");
+            break;
+        case SCREEN_ABOUT:
+            if (row == ABOUT_ROW_VERSION) snprintf(value, value_size, "v%d.%d.%d", g_version.major, g_version.minor, g_version.patch);
+            else if (row == ABOUT_ROW_PLUGIN) snprintf(value, value_size, "%s", g_plugin_compatible ? "OK" : "Mismatch");
+            else if (row == ABOUT_ROW_LOG_FILE) snprintf(value, value_size, "Share for issues");
+            break;
+        default:
+            break;
+    }
+}
+
+static void row_text(app_screen_t screen,
+                     int row,
+                     const char **icon,
+                     const char **label,
+                     const char **desc,
+                     eq_ui_row_kind_t *kind)
+{
+    *icon = "";
+    *label = "";
+    *desc = "";
+    *kind = EQ_UI_ROW_READONLY;
+
+    switch (screen) {
+        case SCREEN_HOME: {
+            static const char *icons[] = {"power", "simple", "advanced", "preset", "themes", "settings", "status", "about"};
+            static const char *labels[] = {"Equalizer", "Simple EQ", "Advanced EQ", "Presets", "Themes", "Settings", "Telemetry", "Help"};
+            static const char *descs[] = {
+                "Turn sound tuning on or off",
+                "Adjust bass, mids, treble",
+                "Fine tune every band",
+                "Choose or save profiles",
+                "Choose the app color style",
+                "Output scope and safety",
+                "Live output and app status",
+                "Controls and short guide"
+            };
+            *icon = icons[row]; *label = labels[row]; *desc = descs[row];
+            *kind = row == 0 ? EQ_UI_ROW_ACTION : EQ_UI_ROW_NAV;
+            break;
+        }
+        case SCREEN_STATUS:
+            if (row_is_section(screen, row)) {
+                *label = row == STATUS_ROW_LEVELS_SECTION ? "Audio levels" : "Diagnostics";
+                *desc = row == STATUS_ROW_DIAGNOSTICS_SECTION ? "Read-only processing counters" : "";
+                *kind = EQ_UI_ROW_SECTION;
+            } else {
+                *icon = (const char *[]){"status", "speaker", "preset", "status", "level", "level", "info", "level", "status", "info", "info", "info"}[
+                    row == STATUS_ROW_EQ_STATUS ? 0 :
+                    row == STATUS_ROW_OUTPUT ? 1 :
+                    row == STATUS_ROW_PRESET ? 2 :
+                    row == STATUS_ROW_PLUGIN ? 3 :
+                    row == STATUS_ROW_CLIPPING ? 4 :
+                    row == STATUS_ROW_PEAK ? 5 :
+                    row == STATUS_ROW_AUDIO_RATE ? 6 :
+                    row == STATUS_ROW_STREAMS ? 7 :
+                    row == STATUS_ROW_SKIPPED ? 8 :
+                    row == STATUS_ROW_UNKNOWN ? 9 :
+                    row == STATUS_ROW_LAST_BLOCK ? 10 : 11];
+                *label = (const char *[]){"EQ status", "Output", "Preset", "Plugin", "Clipping", "Peak level", "Audio rate", "Audio streams", "Skipped audio", "Unknown audio", "Last block", "Slowest block", "Blocks processed"}[
+                    row == STATUS_ROW_EQ_STATUS ? 0 :
+                    row == STATUS_ROW_OUTPUT ? 1 :
+                    row == STATUS_ROW_PRESET ? 2 :
+                    row == STATUS_ROW_PLUGIN ? 3 :
+                    row == STATUS_ROW_CLIPPING ? 4 :
+                    row == STATUS_ROW_PEAK ? 5 :
+                    row == STATUS_ROW_AUDIO_RATE ? 6 :
+                    row == STATUS_ROW_STREAMS ? 7 :
+                    row == STATUS_ROW_SKIPPED ? 8 :
+                    row == STATUS_ROW_UNKNOWN ? 9 :
+                    row == STATUS_ROW_LAST_BLOCK ? 10 :
+                    row == STATUS_ROW_SLOWEST_BLOCK ? 11 : 12];
+                *desc = (const char *[]){"Active or why it is skipped", "Speakers, wired, or Bluetooth", "Selected profile slot", "App and plugin must match", "Limiter protected the sound", "Recent left and right volume", "Current stream rate", "Streams being watched", "Skipped to avoid stutter", "Streams EQ could not identify", "Latest audio block time", "Slowest audio block time", "Total blocks seen"}[
+                    row == STATUS_ROW_EQ_STATUS ? 0 :
+                    row == STATUS_ROW_OUTPUT ? 1 :
+                    row == STATUS_ROW_PRESET ? 2 :
+                    row == STATUS_ROW_PLUGIN ? 3 :
+                    row == STATUS_ROW_CLIPPING ? 4 :
+                    row == STATUS_ROW_PEAK ? 5 :
+                    row == STATUS_ROW_AUDIO_RATE ? 6 :
+                    row == STATUS_ROW_STREAMS ? 7 :
+                    row == STATUS_ROW_SKIPPED ? 8 :
+                    row == STATUS_ROW_UNKNOWN ? 9 :
+                    row == STATUS_ROW_LAST_BLOCK ? 10 :
+                    row == STATUS_ROW_SLOWEST_BLOCK ? 11 : 12];
+            }
+            break;
+        case SCREEN_PRESETS:
+            if (row_is_section(screen, row)) {
+                *label = "Preset actions";
+                *desc = "Save, load, or clear curves";
+                *kind = EQ_UI_ROW_SECTION;
+            } else if (row == PRESETS_ROW_SLOT) {
+                *icon = "preset";
+                *label = "Preset slot";
+                *desc = "Left/right changes slot";
+                *kind = EQ_UI_ROW_ADJUST;
+            } else if (row == PRESETS_ROW_STOCK_DEPTH) {
+                *icon = "preset";
+                *label = "Preset: STOCK Depth";
+                *desc = "Warmer stock-speaker profile";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == PRESETS_ROW_MOD_SWITCH) {
+                *icon = "preset";
+                *label = "Preset: MOD Switch";
+                *desc = "For Switch speaker mod";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == PRESETS_ROW_SAVE) {
+                *icon = "save";
+                *label = "Save current preset";
+                *desc = "Saves preset and startup";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == PRESETS_ROW_LOAD) {
+                *icon = "load";
+                *label = "Load preset";
+                *desc = "Loads the selected slot";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == PRESETS_ROW_RESET) {
+                *icon = "reset";
+                *label = "Reset EQ";
+                *desc = "Clears all EQ gains";
+                *kind = EQ_UI_ROW_ACTION;
+            }
+            break;
+        case SCREEN_SIMPLE:
+            if (row == SIMPLE_ROW_PREAMP) {
+                *icon = "level";
+                *label = "Preamp";
+                *desc = "Overall volume before EQ";
+                *kind = EQ_UI_ROW_ADJUST;
+            } else if (row == SIMPLE_ROW_BASS) {
+                *icon = "simple";
+                *label = "Bass";
+                *desc = "Low sound and depth";
+                *kind = EQ_UI_ROW_ADJUST;
+            } else if (row == SIMPLE_ROW_MIDRANGE) {
+                *icon = "simple";
+                *label = "Midrange";
+                *desc = "Voice and body";
+                *kind = EQ_UI_ROW_ADJUST;
+            } else if (row == SIMPLE_ROW_TREBLE) {
+                *icon = "simple";
+                *label = "Treble";
+                *desc = "Clarity and sparkle";
+                *kind = EQ_UI_ROW_ADJUST;
+            } else if (row == SIMPLE_ROW_PRESET_SECTION) {
+                *label = "Preset controls";
+                *desc = "Save or undo this curve";
+                *kind = EQ_UI_ROW_SECTION;
+            } else if (row == SIMPLE_ROW_PRESET_SLOT) {
+                *icon = "preset";
+                *label = "Preset slot";
+                *desc = "Left/right chooses save slot";
+                *kind = EQ_UI_ROW_ADJUST;
+            } else if (row == SIMPLE_ROW_SAVE_CURRENT) {
+                *icon = "save";
+                *label = "Save to this slot";
+                *desc = "Keep this curve after reboot";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == SIMPLE_ROW_SAVE_NEXT) {
+                *icon = "save";
+                *label = "Save as next slot";
+                *desc = "Copy this curve to another slot";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == SIMPLE_ROW_UNDO_ENTRY) {
+                *icon = "reset";
+                *label = "Undo screen edits";
+                *desc = "Restore values from entry";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == SIMPLE_ROW_RESET_EQ) {
+                *icon = "reset";
+                *label = "Reset EQ";
+                *desc = "Flat bands and preamp";
+                *kind = EQ_UI_ROW_ACTION;
+            }
+            break;
+        case SCREEN_ADVANCED:
+            if (row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
+                int band = row - ADV_BAND_ROW_BASE;
+                *icon = "advanced";
+                *label = band_labels[band];
+                *desc = "Left/right fine tune, L/R coarse tune";
+                *kind = EQ_UI_ROW_ADJUST;
+            } else if (row == ADV_ROW_PRESET_SECTION) {
+                *label = "Preset controls";
+                *desc = "Live edits apply now";
+                *kind = EQ_UI_ROW_SECTION;
+            } else if (row == ADV_ROW_PRESET_SLOT) {
+                *icon = "preset";
+                *label = "Preset slot";
+                *desc = "Left/right chooses save slot";
+                *kind = EQ_UI_ROW_ADJUST;
+            } else if (row == ADV_ROW_SAVE_CURRENT) {
+                *icon = "save";
+                *label = "Save to this slot";
+                *desc = "Keep this curve after reboot";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == ADV_ROW_SAVE_NEXT) {
+                *icon = "save";
+                *label = "Save as next slot";
+                *desc = "Copy this curve to another slot";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == ADV_ROW_UNDO_ENTRY) {
+                *icon = "reset";
+                *label = "Undo screen edits";
+                *desc = "Restore values from entry";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == ADV_ROW_RESET_EQ) {
+                *icon = "reset";
+                *label = "Reset EQ";
+                *desc = "Flat bands and preamp";
+                *kind = EQ_UI_ROW_ACTION;
+            }
+            break;
+        case SCREEN_THEMES:
+            *icon = "themes";
+            *label = eq_ui_theme_name(row);
+            *desc = eq_ui_theme_description(row);
+            *kind = EQ_UI_ROW_ACTION;
+            break;
+        case SCREEN_SETTINGS:
+            if (row_is_section(screen, row)) {
+                *label = "Safety and startup";
+                *desc = "";
+                *kind = EQ_UI_ROW_SECTION;
+            } else if (row == SETTINGS_ROW_ENABLED) {
+                *icon = "power";
+                *label = "Equalizer";
+                *desc = "Turn EQ processing on or off";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == SETTINGS_ROW_SCOPE) {
+                *icon = "speaker";
+                *label = "Apply EQ to";
+                *desc = "Speakers only or all outputs";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == SETTINGS_ROW_HPF) {
+                *icon = "hpf";
+                *label = "Bass guard";
+                *desc = "Reduces deep bass distortion";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == SETTINGS_ROW_HEADROOM) {
+                *icon = "headroom";
+                *label = "Sound mode";
+                *desc = "Safe, Loud, or Direct";
+                *kind = EQ_UI_ROW_ADJUST;
+            } else if (row == SETTINGS_ROW_ROUTE) {
+                *icon = "route";
+                *label = "Detected output";
+                *desc = "Kept for games after exit";
+            } else if (row == SETTINGS_ROW_STARTUP) {
+                *icon = "save";
+                *label = "Startup settings";
+                *desc = "Used after reboot";
+            }
+            break;
+        case SCREEN_ABOUT:
+            if (row_is_section(screen, row)) {
+                *label = row == ABOUT_ROW_EQ_SECTION ? "EQ basics" :
+                    row == ABOUT_ROW_OUTPUT_SECTION ? "Output modes" : "Controls and paths";
+                *desc = "";
+                *kind = EQ_UI_ROW_SECTION;
+            } else if (row == ABOUT_ROW_CREATOR) {
+                *icon = "about";
+                *label = "Created by shevoK";
+                *desc = "EQVita app creator";
+            } else if (row == ABOUT_ROW_REPOSITORY) {
+                *icon = "load";
+                *label = "GitHub: shev0k/EQVita";
+                *desc = "Source, releases, and issues";
+            } else if (row == ABOUT_ROW_LOG_FILE) {
+                *icon = "save";
+                *label = "Log file";
+                *desc = APP_LOG_PATH;
+            } else if (row == ABOUT_ROW_WHAT) {
+                *icon = "simple";
+                *label = "What it does";
+                *desc = "Adds EQ to Vita system audio";
+            } else if (row == ABOUT_ROW_VERSION) {
+                *icon = "about";
+                *label = "Version";
+                *desc = "Companion app version";
+            } else if (row == ABOUT_ROW_PLUGIN) {
+                *icon = "status";
+                *label = "Plugin";
+                *desc = "App and plugin must match";
+            } else if (row == ABOUT_ROW_PRESETS) {
+                *icon = "preset";
+                *label = "Presets";
+                *desc = "Saved sound profiles";
+            } else if (row == ABOUT_ROW_SIMPLE) {
+                *icon = "simple";
+                *label = "Simple EQ";
+                *desc = "Fast bass, mids, treble tuning";
+            } else if (row == ABOUT_ROW_ADVANCED) {
+                *icon = "advanced";
+                *label = "Advanced EQ";
+                *desc = "Fine tune every EQ band";
+            } else if (row == ABOUT_ROW_PREAMP) {
+                *icon = "level";
+                *label = "Preamp";
+                *desc = "Volume before the EQ";
+            } else if (row == ABOUT_ROW_HPF) {
+                *icon = "hpf";
+                *label = "HPF / Bass guard";
+                *desc = "Cuts very deep bass";
+            } else if (row == ABOUT_ROW_SPEAKERS) {
+                *icon = "speaker";
+                *label = "Speakers mode";
+                *desc = "EQ only Vita speakers";
+            } else if (row == ABOUT_ROW_ALL_OUTPUTS) {
+                *icon = "speaker";
+                *label = "All outputs";
+                *desc = "EQ wired and Bluetooth too";
+            } else if (row == ABOUT_ROW_BYPASS) {
+                *icon = "status";
+                *label = "Bypass";
+                *desc = "EQ is skipped or turned off";
+            } else if (row == ABOUT_ROW_DISTORTION) {
+                *icon = "level";
+                *label = "Avoid distortion";
+                *desc = "Lower boosts if sound cracks";
+            } else if (row == ABOUT_ROW_CONTROLS) {
+                *icon = "nav";
+                *label = "Controls";
+                *desc = "Cross, Circle, Start, Triangle";
+            } else if (row == ABOUT_ROW_DATA_FOLDER) {
+                *icon = "save";
+                *label = "Data folder";
+                *desc = "ur0:data/eqvita";
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+static void draw_current_rows(void)
+{
+    int count = current_row_count();
+    int visible = visible_row_capacity();
+    int selected = g_selected[g_screen];
+    int scroll = g_scroll_top[g_screen];
+    g_row_bound_count = 0;
+
+    for (int i = 0; i < visible && scroll + i < count && i < EQ_UI_MAX_VISIBLE_ROWS; ++i) {
+        int row = scroll + i;
+        const char *icon;
+        const char *label;
+        const char *desc;
+        eq_ui_row_kind_t kind;
+        char value[64];
+        eq_ui_row_bounds_t *bounds = &g_row_bounds[g_row_bound_count++];
+
+        row_text(g_screen, row, &icon, &label, &desc, &kind);
+        row_value(value, sizeof(value), g_screen, row);
+
+        if (g_screen == SCREEN_SIMPLE && row >= SIMPLE_ROW_PREAMP && row <= SIMPLE_ROW_TREBLE) {
+            int32_t amount = row == SIMPLE_ROW_PREAMP ? g_control.preamp_mdB :
+                row == SIMPLE_ROW_BASS ? g_control.band_gain_mdB[1] :
+                row == SIMPLE_ROW_MIDRANGE ? g_control.band_gain_mdB[4] : g_control.band_gain_mdB[7];
+            eq_ui_draw_slider(i, row, row == selected, icon, label, desc, value, amount, kind, bounds);
+        } else if (g_screen == SCREEN_ADVANCED && row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
+            int band = row - ADV_BAND_ROW_BASE;
+            eq_ui_draw_slider(i, row, row == selected, icon, label, desc, value, g_control.band_gain_mdB[band], kind, bounds);
+        } else {
+            eq_ui_draw_row(i, row, row == selected, icon, label, desc, value, kind, bounds);
+        }
+    }
+}
+
+static void render_frame(void)
+{
+    char left[64];
+    char right[64];
+    char subtitle[96];
+    const char *footer_left = g_screen == SCREEN_HOME ? "Circle Exit" : "Circle Back";
+
     if (g_plugin_compatible) {
         int status_res = EqGetStatus(&g_status);
         if (status_res < 0) {
             set_message("Status failed (%d)", status_res);
         }
     }
-    ui_line("Route: %s (%s) | SR: %u | EQ: %s/%s | %s\n",
-        route_str(g_status.route),
-        g_control.speaker_only ? "Spk" : "All",
-        g_status.sample_rate,
-        g_control.enabled ? "On" : "Off",
-        g_status.eq_active ? "Act" : "Byp",
-        g_status.smoothing ? "Transition" : bypass_reason_str(g_status.bypass_reason));
-    ui_line("Ports:%u Busy:%u Unknown:%u DSP:%uus/%uus\n",
-        g_status.debug_active_ports,
-        g_status.debug_busy_bypass_count,
-        g_status.debug_unknown_port_count,
-        g_status.debug_last_us,
-        g_status.debug_max_us);
-    ui_line("Log: ur0:data/eqvita/app.log\n");
-    if (!g_plugin_compatible) {
-        ui_line(COL_METER_H "Plugin mismatch. Install EQVita plugin v%d.%d.x." COL_RESET "\n",
-            EQ_VERSION_MAJOR, EQ_VERSION_MINOR);
-    } else if (g_message_frames > 0 && g_message[0]) {
-        ui_line(COL_VALUE "%s" COL_RESET "\n", g_message);
+
+    snprintf(left, sizeof(left), "EQVita v%d.%d.%d", g_version.major, g_version.minor, g_version.patch);
+    snprintf(right, sizeof(right), "%s - %s", eq_target_str(), g_control.enabled ? "On" : "Bypass");
+    snprintf(subtitle, sizeof(subtitle), "%s - Slot %d - %s",
+             g_control.enabled ? "EQ on" : "EQ off",
+             g_preset_slot + 1,
+             eq_target_str());
+
+    ensure_selection_visible();
+    eq_ui_begin_frame();
+    eq_ui_draw_shell(screen_title(g_screen), g_screen == SCREEN_HOME ? subtitle : screen_subtitle(g_screen), left, right);
+    draw_current_rows();
+    eq_ui_draw_footer(footer_left, "Cross Select   Start Bypass", "Triangle Help");
+    if (g_message_frames > 0 && g_message[0]) {
+        eq_ui_draw_message(g_message);
         g_message_frames--;
     }
-    ui_line("------------------------------------------------\n");
-
-    // Viewport Calculation
-    int total_items = (g_view_mode == 0) ? 14 : 19;
-    int viewport_height = 12;
-    
-    // Auto-scroll
-    if (g_selected < g_scroll_top) g_scroll_top = g_selected;
-    if (g_selected >= g_scroll_top + viewport_height) g_scroll_top = g_selected - viewport_height + 1;
-
-    // Render List
-    for (int i = g_scroll_top; i < g_scroll_top + viewport_height && i < total_items; ++i) {
-        int is_sel = (i == g_selected);
-        const char *sel_prefix = is_sel ? COL_SELECTED "> " : "  ";
-        const char *sel_suffix = is_sel ? COL_RESET : "";
-
-        // Settings Section
-        if (i == 0) {
-            ui_line(COL_SECTION "[SETTINGS]" COL_RESET "\n");
-            ui_line("%sEnabled:      [%s]%s\n", sel_prefix, g_control.enabled?"ON ":"OFF", sel_suffix);
-        } else if (i == 1) {
-            ui_line("%sSpeaker only: [%s]%s\n", sel_prefix, g_control.speaker_only?"YES":"NO ", sel_suffix);
-        } else if (i == 2) {
-            ui_line("%sHPF (70Hz):   [%s]%s\n", sel_prefix, eq_control_hpf_enabled(&g_control)?"ON ":"OFF", sel_suffix);
-        } else if (i == 3) {
-            ui_line("%sHeadroom:     [%s]%s\n", sel_prefix, headroom_mode_str(eq_control_get_headroom_mode(&g_control)), sel_suffix);
-        } else if (i == 4) {
-            ui_line("%sPreamp:       %+5.1f dB%s\n", sel_prefix, g_control.preamp_mdB/1000.0f, sel_suffix);
-        }
-        // EQ Section
-        else if (g_view_mode == 0) {
-            if (i == 5) {
-                ui_line("\n");
-                ui_line(COL_SECTION "[EQUALIZER]" COL_RESET "\n");
-                psvDebugScreenPrintf("%sBass:    ", sel_prefix);
-                draw_bar(g_control.band_gain_mdB[1]);
-                psvDebugScreenPrintf(" " COL_VALUE "%+5.1f dB" COL_RESET "%s\n", g_control.band_gain_mdB[1]/1000.0f, sel_suffix);
-            } else if (i == 6) {
-                psvDebugScreenPrintf("%sMidrange:", sel_prefix);
-                draw_bar(g_control.band_gain_mdB[4]);
-                psvDebugScreenPrintf(" " COL_VALUE "%+5.1f dB" COL_RESET "%s\n", g_control.band_gain_mdB[4]/1000.0f, sel_suffix);
-            } else if (i == 7) {
-                psvDebugScreenPrintf("%sTreble:  ", sel_prefix);
-                draw_bar(g_control.band_gain_mdB[7]);
-                psvDebugScreenPrintf(" " COL_VALUE "%+5.1f dB" COL_RESET "%s\n", g_control.band_gain_mdB[7]/1000.0f, sel_suffix);
-            }
-        } else {
-            if (i == 5) {
-                ui_line("\n");
-                ui_line(COL_SECTION "[EQUALIZER]" COL_RESET "\n");
-            }
-            if (i >= 5 && i < 15) {
-                int band_idx = i - 5;
-                psvDebugScreenPrintf("%s%4s Hz ", sel_prefix, band_labels[band_idx]);
-                draw_bar(g_control.band_gain_mdB[band_idx]);
-                psvDebugScreenPrintf(" " COL_VALUE "%+5.1f dB" COL_RESET "%s\n", g_control.band_gain_mdB[band_idx]/1000.0f, sel_suffix);
-            }
-        }
-        
-        // Actions Section
-        int action_start = (g_view_mode == 0) ? 8 : 15;
-        if (g_view_mode == 0) {
-            if (i == action_start) {
-                ui_line("\n");
-                ui_line(COL_SECTION "[ACTIONS]" COL_RESET "\n");
-                ui_line("%sPreset Slot:  [%d]%s\n", sel_prefix, g_preset_slot + 1, sel_suffix);
-            } else if (i == action_start + 1) {
-                ui_line("%s[ Preset: STOCK Depth ]%s\n", sel_prefix, sel_suffix);
-            } else if (i == action_start + 2) {
-                ui_line("%s[ Preset: MOD Switch ]%s\n", sel_prefix, sel_suffix);
-            } else if (i == action_start + 3) {
-                ui_line("%s[ Save Preset   ]%s\n", sel_prefix, sel_suffix);
-            } else if (i == action_start + 4) {
-                ui_line("%s[ Load Preset   ]%s\n", sel_prefix, sel_suffix);
-            } else if (i == action_start + 5) {
-                ui_line("%s[ Reset EQ      ]%s\n", sel_prefix, sel_suffix);
-            }
-        } else if (i == action_start) {
-            ui_line("\n");
-            ui_line(COL_SECTION "[ACTIONS]" COL_RESET "\n");
-            ui_line("%sPreset Slot:  [%d]%s\n", sel_prefix, g_preset_slot + 1, sel_suffix);
-        } else if (i == action_start + 1) {
-            ui_line("%s[ Save Preset ]%s\n", sel_prefix, sel_suffix);
-        } else if (i == action_start + 2) {
-            ui_line("%s[ Load Preset ]%s\n", sel_prefix, sel_suffix);
-        } else if (i == action_start + 3) {
-            ui_line("%s[ Reset EQ    ]%s\n", sel_prefix, sel_suffix);
-        }
-    }
-    
-    // Peak Meters (Fixed at bottom)
-    ui_line("\n" COL_SECTION "[PEAK LEVELS]" COL_RESET "\n");
-    ui_line("L: "); draw_meter_colored(g_status.peak_l); ui_line("\n");
-    ui_line("R: "); draw_meter_colored(g_status.peak_r); ui_line(" Clips: %d\n", g_status.clip_events);
-
-    ui_line("------------------------------------------------\n");
-    ui_line("[HELP] " COL_VALUE "X" COL_RESET ":Toggle " COL_VALUE "O" COL_RESET ":Exit " COL_VALUE "Start" COL_RESET ":Bypass " COL_VALUE "Select" COL_RESET ":View\n");
+    eq_ui_end_frame();
 }
 
-int main(void) {
-    psvDebugScreenInit();
-    psvDebugScreenSetBgColor(0x000000);
-    psvDebugScreenSetFgColor(0xFFFFFF);
-    psvDebugScreenPuts("EQ Vita starting...\n");
+static void adjust_current(int delta)
+{
+    int row = g_selected[g_screen];
+    switch (g_screen) {
+        case SCREEN_PRESETS:
+            if (row == PRESETS_ROW_SLOT) {
+                g_preset_slot = (g_preset_slot + (delta > 0 ? 1 : 2)) % 3;
+            }
+            break;
+        case SCREEN_SIMPLE:
+            if (row == SIMPLE_ROW_PREAMP) adjust_preamp(delta);
+            else if (row == SIMPLE_ROW_BASS) apply_simple_eq(g_control.band_gain_mdB[1] + delta, g_control.band_gain_mdB[4], g_control.band_gain_mdB[7], 1);
+            else if (row == SIMPLE_ROW_MIDRANGE) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4] + delta, g_control.band_gain_mdB[7], 1);
+            else if (row == SIMPLE_ROW_TREBLE) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4], g_control.band_gain_mdB[7] + delta, 1);
+            else if (row == SIMPLE_ROW_PRESET_SLOT) g_preset_slot = (g_preset_slot + (delta > 0 ? 1 : 2)) % 3;
+            break;
+        case SCREEN_ADVANCED:
+            if (row >= ADV_BAND_ROW_BASE && row < ADV_BAND_ROW_BASE + EQ_BANDS) {
+                adjust_band(row - ADV_BAND_ROW_BASE, delta);
+            } else if (row == ADV_ROW_PRESET_SLOT) {
+                g_preset_slot = (g_preset_slot + (delta > 0 ? 1 : 2)) % 3;
+            }
+            break;
+        case SCREEN_THEMES: {
+            move_selection(delta > 0 ? 1 : -1);
+            break;
+        }
+        case SCREEN_SETTINGS:
+            if (row == SETTINGS_ROW_ENABLED) toggle_enabled();
+            else if (row == SETTINGS_ROW_SCOPE) toggle_speaker_only();
+            else if (row == SETTINGS_ROW_HPF) toggle_hpf();
+            else if (row == SETTINGS_ROW_HEADROOM) adjust_headroom_mode(delta > 0 ? 1 : -1);
+            break;
+        default:
+            break;
+    }
+}
+
+static void activate_current(void)
+{
+    int row = g_selected[g_screen];
+    if (g_screen == SCREEN_HOME) {
+        if (row == 0) {
+            toggle_enabled();
+            return;
+        }
+        change_screen(home_screen_for_row(row));
+        return;
+    }
+
+    switch (g_screen) {
+        case SCREEN_PRESETS:
+            if (row == PRESETS_ROW_STOCK_DEPTH) apply_preset_stock_depth();
+            else if (row == PRESETS_ROW_MOD_SWITCH) apply_preset_mod_switch();
+            else if (row == PRESETS_ROW_SAVE) save_preset_with_message();
+            else if (row == PRESETS_ROW_LOAD) load_preset_with_message();
+            else if (row == PRESETS_ROW_RESET) reset_defaults();
+            break;
+        case SCREEN_SIMPLE:
+            if (row == SIMPLE_ROW_SAVE_CURRENT) save_preset_with_message();
+            else if (row == SIMPLE_ROW_SAVE_NEXT) save_as_next_preset();
+            else if (row == SIMPLE_ROW_UNDO_ENTRY) restore_eq_entry();
+            else if (row == SIMPLE_ROW_RESET_EQ) reset_defaults();
+            break;
+        case SCREEN_ADVANCED:
+            if (row == ADV_ROW_SAVE_CURRENT) save_preset_with_message();
+            else if (row == ADV_ROW_SAVE_NEXT) save_as_next_preset();
+            else if (row == ADV_ROW_UNDO_ENTRY) restore_eq_entry();
+            else if (row == ADV_ROW_RESET_EQ) reset_defaults();
+            break;
+        case SCREEN_THEMES:
+            apply_theme_index(row);
+            break;
+        case SCREEN_SETTINGS:
+            if (row == SETTINGS_ROW_ENABLED) toggle_enabled();
+            else if (row == SETTINGS_ROW_SCOPE) toggle_speaker_only();
+            else if (row == SETTINGS_ROW_HPF) toggle_hpf();
+            else if (row == SETTINGS_ROW_HEADROOM) adjust_headroom_mode(1);
+            break;
+        default:
+            break;
+    }
+}
+
+static int touch_to_screen(const SceTouchReport *report, int *out_x, int *out_y)
+{
+    int x;
+    int y;
+    int min_x;
+    int min_y;
+    int max_x;
+    int max_y;
+
+    if (!report || !out_x || !out_y) {
+        return -1;
+    }
+
+    x = report->x;
+    y = report->y;
+
+    if (g_touch_panel_ready) {
+        min_x = g_touch_panel.minDispX;
+        min_y = g_touch_panel.minDispY;
+        max_x = g_touch_panel.maxDispX;
+        max_y = g_touch_panel.maxDispY;
+        if (max_x > min_x && max_y > min_y) {
+            x = ((report->x - min_x) * EQ_UI_SCREEN_W) / (max_x - min_x);
+            y = ((report->y - min_y) * EQ_UI_SCREEN_H) / (max_y - min_y);
+        }
+    } else if (x >= EQ_UI_SCREEN_W || y >= EQ_UI_SCREEN_H) {
+        x /= 2;
+        y /= 2;
+    }
+
+    *out_x = clamp(x, 0, EQ_UI_SCREEN_W - 1);
+    *out_y = clamp(y, 0, EQ_UI_SCREEN_H - 1);
+    return 0;
+}
+
+static int row_at_point(int x, int y)
+{
+    for (int i = 0; i < g_row_bound_count; ++i) {
+        eq_ui_row_bounds_t *b = &g_row_bounds[i];
+        if (x >= b->x && x < b->x + b->w && y >= b->y && y < b->y + b->h) {
+            return b->row;
+        }
+    }
+    return -1;
+}
+
+static void handle_touch(void)
+{
+    SceTouchData touch;
+    int has_touch;
+    int x = 0;
+    int y = 0;
+
+    memset(&touch, 0, sizeof(touch));
+    if (sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1) < 0) {
+        return;
+    }
+
+    has_touch = touch.reportNum > 0;
+    if (has_touch && touch_to_screen(&touch.report[0], &x, &y) < 0) {
+        return;
+    }
+
+    if (has_touch && !g_touch_down) {
+        int row;
+        g_touch_down = 1;
+        g_touch_start_x = x;
+        g_touch_start_y = y;
+        g_touch_last_y = y;
+        g_touch_moved = 0;
+        row = row_at_point(x, y);
+        if (row >= 0 && row_is_selectable(g_screen, row)) {
+            g_selected[g_screen] = row;
+            ensure_selection_visible();
+        }
+    } else if (has_touch && g_touch_down) {
+        int dy = y - g_touch_last_y;
+        if (dy > 34 || dy < -34) {
+            g_touch_moved = 1;
+            scroll_current(dy > 0 ? -1 : 1);
+            g_touch_last_y = y;
+        }
+        if ((x - g_touch_start_x > 18 || g_touch_start_x - x > 18) ||
+            (y - g_touch_start_y > 18 || g_touch_start_y - y > 18)) {
+            g_touch_moved = 1;
+        }
+    } else if (!has_touch && g_touch_down) {
+        int row = row_at_point(g_touch_start_x, g_touch_start_y);
+        if (!g_touch_moved && row >= 0 && row_is_selectable(g_screen, row)) {
+            g_selected[g_screen] = row;
+            ensure_selection_visible();
+            activate_current();
+        }
+        g_touch_down = 0;
+    }
+}
+
+int main(void)
+{
+    SceCtrlData last = {0};
+    int repeat_timer = 0;
+    int last_buttons = 0;
+
+    eq_ui_set_theme(load_theme_index());
+    if (eq_ui_init() < 0) {
+        return sceKernelExitProcess(1);
+    }
+
+    sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_START);
+    g_touch_panel_ready = (sceTouchGetPanelInfo(SCE_TOUCH_PORT_FRONT, &g_touch_panel) >= 0);
 
     EqGetVersion(&g_version);
-    psvDebugScreenPrintf("Version %d.%d.%d\n", g_version.major, g_version.minor, g_version.patch);
-    psvDebugScreenSwapFb();
-
     eq_control_init_defaults(&g_control);
     g_control.enabled = 1;
     g_control.route_hint = (uint8_t)detect_route_user();
@@ -692,36 +1563,29 @@ int main(void) {
         g_version.major, g_version.minor, g_version.patch,
         g_plugin_compatible, route_str(g_control.route_hint));
 
-    for (int i = 0; i < 60; ++i) { sceDisplayWaitVblankStartMulti(1); }
-
-    ui_init();
-    psvDebugScreenSwapFb();
-
-#define REPEAT_DELAY 15
-#define REPEAT_RATE 3
-
-    SceCtrlData last = {0};
-    int repeat_timer = 0;
-    int last_buttons = 0;
-
     while (1) {
-        sceDisplayWaitVblankStartMulti(1);
-
         SceCtrlData pad;
-        if (sceCtrlPeekBufferPositive(0, &pad, 1) < 0) { continue; }
-        
-        int newly = (~last.buttons) & pad.buttons;
-        int held = pad.buttons;
-        
+        int newly;
+        int held;
+        int active_input;
+
+        sceDisplayWaitVblankStartMulti(1);
+        if (sceCtrlPeekBufferPositive(0, &pad, 1) < 0) {
+            render_frame();
+            continue;
+        }
+
+        newly = (~last.buttons) & pad.buttons;
+        held = pad.buttons;
+
         if (held != last_buttons) {
             repeat_timer = 0;
             last_buttons = held;
         }
 
-        int active_input = newly;
-        
-        if (repeat_timer > REPEAT_DELAY) {
-            if ((repeat_timer - REPEAT_DELAY) % REPEAT_RATE == 0) {
+        active_input = newly;
+        if (repeat_timer > 15) {
+            if ((repeat_timer - 15) % 3 == 0) {
                 active_input |= (held & (SCE_CTRL_UP | SCE_CTRL_DOWN | SCE_CTRL_LEFT | SCE_CTRL_RIGHT | SCE_CTRL_LTRIGGER | SCE_CTRL_RTRIGGER));
             }
         }
@@ -733,113 +1597,35 @@ int main(void) {
 
         last = pad;
 
-        if (!g_plugin_compatible) {
-            if (newly & SCE_CTRL_CIRCLE) {
+        if (active_input & SCE_CTRL_UP) {
+            move_selection(-1);
+        } else if (active_input & SCE_CTRL_DOWN) {
+            move_selection(1);
+        } else if (active_input & SCE_CTRL_LEFT) {
+            adjust_current(-STEP_FINE);
+        } else if (active_input & SCE_CTRL_RIGHT) {
+            adjust_current(STEP_FINE);
+        } else if (active_input & SCE_CTRL_LTRIGGER) {
+            adjust_current(-STEP_COARSE);
+        } else if (active_input & SCE_CTRL_RTRIGGER) {
+            adjust_current(STEP_COARSE);
+        } else if (newly & SCE_CTRL_CROSS) {
+            activate_current();
+        } else if (newly & SCE_CTRL_CIRCLE) {
+            if (g_screen == SCREEN_HOME) {
                 break;
             }
-            ui_render();
-            maybe_log_status();
-            psvDebugScreenSwapFb();
-            continue;
-        }
-
-        int rows_simple = 5 + 3 + 6; // 14 items (0-13)
-        int rows_advanced = 5 + EQ_BANDS + 4; // 19 items (0-18)
-        int rows = (g_view_mode == 0) ? rows_simple : rows_advanced;
-
-        if (active_input & SCE_CTRL_UP) {
-            g_selected = (g_selected - 1 + rows) % rows;
-        } else if (active_input & SCE_CTRL_DOWN) {
-            g_selected = (g_selected + 1) % rows;
-        } else if (active_input & SCE_CTRL_LEFT) {
-            if (g_selected == 0 && (newly & SCE_CTRL_LEFT)) toggle_enabled();
-            else if (g_selected == 1 && (newly & SCE_CTRL_LEFT)) toggle_speaker_only();
-            else if (g_selected == 2 && (newly & SCE_CTRL_LEFT)) toggle_hpf();
-            else if (g_selected == 3 && (newly & SCE_CTRL_LEFT)) adjust_headroom_mode(-1);
-            else if (g_selected == 4) adjust_preamp(-STEP_FINE);
-            else if (g_view_mode == 0) { // Simple Mode
-                if (g_selected == 5) apply_simple_eq(g_control.band_gain_mdB[1] - STEP_FINE, g_control.band_gain_mdB[4], g_control.band_gain_mdB[7], 1);
-                else if (g_selected == 6) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4] - STEP_FINE, g_control.band_gain_mdB[7], 1);
-                else if (g_selected == 7) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4], g_control.band_gain_mdB[7] - STEP_FINE, 1);
-                else if (g_selected == 8 && (newly & SCE_CTRL_LEFT)) { g_preset_slot = (g_preset_slot + 2) % 3; }
-            } else { // Advanced Mode
-                if (g_selected >= 5 && g_selected < 5 + EQ_BANDS) {
-                    adjust_band(g_selected - 5, -STEP_FINE);
-                } else if (g_selected == 5 + EQ_BANDS && (newly & SCE_CTRL_LEFT)) {
-                    g_preset_slot = (g_preset_slot + 2) % 3;
-                }
-            }
-        } else if (active_input & SCE_CTRL_RIGHT) {
-            if (g_selected == 0 && (newly & SCE_CTRL_RIGHT)) toggle_enabled();
-            else if (g_selected == 1 && (newly & SCE_CTRL_RIGHT)) toggle_speaker_only();
-            else if (g_selected == 2 && (newly & SCE_CTRL_RIGHT)) toggle_hpf();
-            else if (g_selected == 3 && (newly & SCE_CTRL_RIGHT)) adjust_headroom_mode(1);
-            else if (g_selected == 4) adjust_preamp(STEP_FINE);
-            else if (g_view_mode == 0) { // Simple Mode
-                if (g_selected == 5) apply_simple_eq(g_control.band_gain_mdB[1] + STEP_FINE, g_control.band_gain_mdB[4], g_control.band_gain_mdB[7], 1);
-                else if (g_selected == 6) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4] + STEP_FINE, g_control.band_gain_mdB[7], 1);
-                else if (g_selected == 7) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4], g_control.band_gain_mdB[7] + STEP_FINE, 1);
-                else if (g_selected == 8 && (newly & SCE_CTRL_RIGHT)) { g_preset_slot = (g_preset_slot + 1) % 3; }
-            } else { // Advanced Mode
-                if (g_selected >= 5 && g_selected < 5 + EQ_BANDS) {
-                    adjust_band(g_selected - 5, STEP_FINE);
-                } else if (g_selected == 5 + EQ_BANDS && (newly & SCE_CTRL_RIGHT)) {
-                    g_preset_slot = (g_preset_slot + 1) % 3;
-                }
-            }
-        } else if (active_input & SCE_CTRL_LTRIGGER) {
-            if (g_selected == 4) adjust_preamp(-STEP_COARSE);
-            else if (g_view_mode == 0) {
-                if (g_selected == 5) apply_simple_eq(g_control.band_gain_mdB[1] - STEP_COARSE, g_control.band_gain_mdB[4], g_control.band_gain_mdB[7], 1);
-                else if (g_selected == 6) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4] - STEP_COARSE, g_control.band_gain_mdB[7], 1);
-                else if (g_selected == 7) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4], g_control.band_gain_mdB[7] - STEP_COARSE, 1);
-            } else {
-                if (g_selected >= 5 && g_selected < 5 + EQ_BANDS) {
-                    adjust_band(g_selected - 5, -STEP_COARSE);
-                }
-            }
-        } else if (active_input & SCE_CTRL_RTRIGGER) {
-            if (g_selected == 4) adjust_preamp(STEP_COARSE);
-            else if (g_view_mode == 0) {
-                if (g_selected == 5) apply_simple_eq(g_control.band_gain_mdB[1] + STEP_COARSE, g_control.band_gain_mdB[4], g_control.band_gain_mdB[7], 1);
-                else if (g_selected == 6) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4] + STEP_COARSE, g_control.band_gain_mdB[7], 1);
-                else if (g_selected == 7) apply_simple_eq(g_control.band_gain_mdB[1], g_control.band_gain_mdB[4], g_control.band_gain_mdB[7] + STEP_COARSE, 1);
-            } else {
-                if (g_selected >= 5 && g_selected < 5 + EQ_BANDS) {
-                    adjust_band(g_selected - 5, STEP_COARSE);
-                }
-            }
-        } else if (newly & SCE_CTRL_CROSS) {
-            if (g_selected == 0) toggle_enabled();
-            else if (g_selected == 1) toggle_speaker_only();
-            else if (g_selected == 2) toggle_hpf();
-            else if (g_selected == 3) adjust_headroom_mode(1);
-            else if (g_view_mode == 0) { // Simple
-                if (g_selected == 9) apply_preset_stock_depth();
-                else if (g_selected == 10) apply_preset_mod_switch();
-                else if (g_selected == 11) save_preset_with_message();
-                else if (g_selected == 12) load_preset_with_message();
-                else if (g_selected == 13) reset_defaults();
-            } else { // Advanced
-                int action_start = 15;
-                if (g_selected == action_start + 1) save_preset_with_message();
-                else if (g_selected == action_start + 2) load_preset_with_message();
-                else if (g_selected == action_start + 3) reset_defaults();
-            }
-        } else if (newly & SCE_CTRL_SELECT) {
-            g_view_mode = !g_view_mode;
-            g_selected = 0;
-            g_scroll_top = 0;
+            change_screen(SCREEN_HOME);
+        } else if (newly & SCE_CTRL_TRIANGLE) {
+            change_screen(SCREEN_ABOUT);
         } else if (newly & SCE_CTRL_START) {
             toggle_enabled();
-        } else if (newly & SCE_CTRL_CIRCLE) {
-            break;
         }
 
+        handle_touch();
         refresh_route_hint();
-        ui_render();
+        render_frame();
         maybe_log_status();
-        psvDebugScreenSwapFb();
     }
 
     if (g_plugin_compatible) {
@@ -847,5 +1633,7 @@ int main(void) {
         save_boot_state();
     }
 
+    sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_STOP);
+    eq_ui_fini();
     return sceKernelExitProcess(0);
 }

@@ -8,7 +8,7 @@ jobs:
   host-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Configure
         run: cmake -S . -B build-host -DEQVITA_HOST_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
@@ -26,12 +26,12 @@ jobs:
   vita-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build Vita artifacts
         run: |
           docker run --rm \
             -v "$PWD:/build/git" \
             -w /build/git \
-            gnuton/vitasdk-docker:latest \
-            bash -lc 'cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel'
+            vitasdk/vitasdk@sha256:2d7203c960a3f76a1fcec72d8dcfb97ddbbde8086b56458291f54e2ec17fb0f3 \
+            bash -lc 'arm-vita-eabi-gcc --version && cmake --version && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel'

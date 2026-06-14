@@ -61,6 +61,7 @@ These cover shared ABI/preset validation, DSP channel-state behavior, sparse aud
 - **Missing math symbols:** Ensure `m` and `gcc` are linked.
 - **`vita-elf-create` warnings:** Ignore if using `libraries` in `exports.yml`.
 - **Clock skew warnings under WSL:** When building from `/mnt/c`, Make can warn about timestamps a fraction of a second in the future. If artifacts are produced, the build is usable; clone/build inside the WSL filesystem to avoid the warning.
+- **GitHub Actions Vita build:** CI uses the official pinned `vitasdk/vitasdk` Docker image. Do not use `gnuton/vitasdk-docker:latest`; that image has broken before because its compiler required a newer glibc than the container provided.
 
 ## Install
 1. Copy `eq_speaker.skprx` to `ur0:tai/`.

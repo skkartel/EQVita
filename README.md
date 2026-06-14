@@ -1,55 +1,50 @@
-# PS Vita Equalizer (EQVita)
+# EQVita
 
-System-wide 10-band graphic equalizer kernel plugin for PS Vita homebrew, with a companion UI app for controls and presets.
+EQVita is a PS Vita system audio equalizer.
 
-EQVita is built as two Vita artifacts:
+It has two parts:
 
-- `eq_speaker.skprx`: taiHEN kernel plugin that hooks `sceAudioOut`.
-- `EQVita.vpk`: companion app used to configure EQ, route hints, presets, and status.
+- `eq_speaker.skprx` - taiHEN kernel plugin that hooks Vita audio output.
+- `EQVita.vpk` - companion app for presets, tuning, themes, status, and logs.
 
-## Status
+Current app/plugin ABI: `1.13.0`.
 
-Current ABI: `1.13.0`.
+## What It Does
 
-This version focuses on stability and compatibility:
+- 10-band graphic EQ: 31 Hz through 16 kHz.
+- Simple EQ mode for bass, mids, and treble.
+- Advanced EQ mode for every band.
+- Preset slots with validated `.eqvp` files.
+- Built-in `STOCK Depth` and `MOD Switch` presets.
+- Speaker-only mode, or all outputs mode for wired/Bluetooth too.
+- Optional bass guard / HPF.
+- Safe, Loud, and Direct headroom modes.
+- Vita-style UI with themes. `Crimson Vita` is the default.
+- Live telemetry for route, bypass reason, clipping, peaks, ports, and hook timing.
+- Boot persistence through `ur0:data/eqvita/boot.eqbs`.
+- App log at `ur0:data/eqvita/app.log`.
 
-- safer `sceAudioOutSetConfig(..., -1, -1, -1)` handling;
-- no guessed audio-buffer lengths;
-- per-channel DSP filter state;
-- validated app/plugin control ABI;
-- validated `.eqvp` preset files with legacy `.bin` import;
-- AVConfig-based route hints from the companion app;
-- persistent route hints for game audio after the app exits;
-- explicit bypass reasons in the UI;
-- sparse audio-port tracking for Vita port IDs such as `256`;
-- non-blocking audio-hook bypass when the plugin audio lock is busy;
-- cheaper DSP for flat bands and no-op control updates;
-- soft-knee overflow limiting instead of hard rail clipping;
-- runtime counters for active ports, busy bypasses, unknown ports, and hook processing time;
-- per-port DSP scratch buffers and deferred port config changes to reduce app-switch/load-time races;
-- explicit Safe/Loud/Raw headroom modes for stable or more forceful EQ tuning;
-- app log for hardware testing.
+## Repo Layout
 
-Hardware testing is still required before publishing release binaries.
-
-## Layout
-
-- `plugin/` - kernel plugin (`eq_speaker.skprx`)
-- `app/` - UI app (`EQVita.vpk`)
-- `common/` - shared ABI and validation helpers
-- `tests/` - host-side unit tests for portable logic
-- `docs/` - build, test, and implementation notes
-- `research/` - VitaSDK audit notes used for the stabilization work
+- `plugin/` - kernel plugin
+- `app/` - Vita companion app and launcher assets
+- `common/` - shared ABI, preset, and boot-state helpers
+- `tests/` - host-side regression tests
+- `docs/` - build and hardware test notes
+- `research/vitasdk-audit-2026-06/` - VitaSDK and project audit notes
+- `scripts/` - Windows/WSL build helpers
 
 ## Build
 
-Install [VitaSDK](https://vitasdk.org/) first. On Windows, build through WSL:
+Install [VitaSDK](https://vitasdk.org/) first.
+
+On Windows, use WSL:
 
 ```powershell
 .\scripts\build-wsl.ps1 -Clean
 ```
 
-Inside WSL/Linux:
+From WSL/Linux:
 
 ```bash
 export VITASDK=/usr/local/vitasdk
@@ -58,12 +53,12 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
 ```
 
-Outputs:
+Build outputs:
 
 - `build/plugin/eq_speaker.skprx`
 - `build/app/EQVita.vpk`
 
-Host-side regression tests:
+Host tests:
 
 ```bash
 cmake -S . -B build-host -DEQVITA_HOST_TESTS=ON
@@ -71,53 +66,68 @@ cmake --build build-host
 ctest --test-dir build-host --output-on-failure
 ```
 
-## Install
+GitHub Actions runs host tests normally and builds Vita artifacts inside the official pinned VitaSDK Docker image.
+
+## Install On Vita
 
 1. Copy `build/plugin/eq_speaker.skprx` to `ur0:tai/`.
-2. Add it to `ur0:tai/config.txt` under `*KERNEL`:
+2. Add it under `*KERNEL` in `ur0:tai/config.txt`:
 
    ```text
    *KERNEL
    ur0:tai/eq_speaker.skprx
    ```
 
-3. Reboot.
+3. Reboot the Vita.
 4. Install `build/app/EQVita.vpk`.
-5. Run EQVita to enable and configure the equalizer.
+5. Open EQVita and tune from the app.
 
-The plugin starts disabled by default. The app and plugin must match ABI `1.13.x` exactly for the current route/status/preset syscall payloads.
+The app and plugin must both be from the same release line. For this build, keep them on ABI `1.13.x`.
 
-## Usage
+## Controls
 
-- Bands: 31 Hz, 62 Hz, 125 Hz, 250 Hz, 500 Hz, 1 kHz, 2 kHz, 4 kHz, 8 kHz, 16 kHz.
-- Gain range: +/-12 dB.
-- Preamp range: +/-12 dB.
-- HPF: optional 70 Hz high-pass; forced for speaker route.
-- Headroom: Safe keeps boost headroom, Loud adds controlled makeup gain, Raw removes automatic headroom and can distort.
-- Speaker-only mode: applies EQ only when the route is classified as speaker.
-- Presets: `ur0:data/eqvita/preset0.eqvp` through `preset2.eqvp`.
-- Legacy presets: old raw `preset%d.bin` files are imported read-only when no `.eqvp` preset exists.
-- Boot persistence: the app writes the active EQ state to `ur0:data/eqvita/boot.eqbs` on save/exit; the plugin loads this at boot before falling back to preset slot 1.
+- D-pad: move through rows.
+- Left / right: change the selected value.
+- L / R: coarse EQ changes.
+- Cross: select, toggle, or activate.
+- Circle: back; exits from the main menu.
+- Start: quick EQ on/off.
+- Triangle: Help.
+- Touch: tap rows or drag lists.
 
-Controls:
+## Presets And Data
 
-- D-pad: move or adjust selected value.
-- L/R: coarse gain adjustment.
-- Cross: toggle or activate selected action.
-- Start: toggle enabled/bypass.
-- Select: switch simple/advanced view.
-- Circle: exit.
+EQVita stores its data in `ur0:data/eqvita/`.
 
-The app writes runtime test notes to `ur0:data/eqvita/app.log`.
+- Presets: `preset0.eqvp`, `preset1.eqvp`, `preset2.eqvp`
+- Boot state: `boot.eqbs`
+- Theme: `theme.cfg`
+- Log: `app.log`
 
-## Route and Bypass Behavior
+Old raw `preset%d.bin` files are imported read-only when a matching `.eqvp` slot does not exist.
 
-The companion app uses AVConfig to classify speaker, wired headphones, and Bluetooth, then sends that route hint to the plugin. The route hint persists after the app exits so launched games can still be processed. The kernel plugin still lets wired-headphone detection override a persisted hint; if there is no usable route hint and no wired-headphone signal, it bypasses instead of assuming speaker.
+If you report an issue, share `ur0:data/eqvita/app.log` when possible.
 
-At boot, the companion app is not running yet, so the plugin restores the saved boot state from `boot.eqbs`. If an enabled saved state has no route hint, the plugin assumes speaker output until the app supplies a fresher AVConfig hint; wired headphones still override this in kernel before speaker-only EQ is applied.
+## Route And Bypass Notes
 
-The UI status shows whether DSP was applied to the last observed buffer and why it may be bypassed: disabled, speaker-only route mismatch, unknown route, invalid port, oversized buffer, copy failure, unsupported format, or audio lock busy. It also shows active tracked ports, busy bypass count, unknown-port count, and last/max hook processing time in microseconds.
+The app detects speakers, wired audio, and Bluetooth through AVConfig and sends that route hint to the plugin.
+
+- `Speakers` mode applies EQ only to Vita speakers.
+- `All outputs` mode also allows wired and Bluetooth output.
+- If EQ is bypassed, the app shows why: disabled, wrong route, unknown output, invalid port, large buffer, copy failure, unsupported format, or audio busy.
+
+At boot, the plugin loads the saved boot state before the app starts. Opening the app refreshes the route hint and status.
+
+## Testing
+
+Run host tests before every commit. Before publishing binaries, test on real Vita hardware with:
+
+[docs/hardware-test-checklist.md](docs/hardware-test-checklist.md)
+
+Kernel audio hooks can pass host tests and still behave differently on real hardware, so hardware testing matters.
 
 ## Credits
 
-Built with VitaSDK and taiHEN. Earlier UI assets were adapted from VitaShell; verify asset licensing before distributing release packages.
+Created by shevoK.
+
+Built with VitaSDK, taiHEN, vita2d, and Feather Icons for the in-app icon sheets.
