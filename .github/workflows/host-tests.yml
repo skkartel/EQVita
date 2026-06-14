@@ -44,7 +44,7 @@ jobs:
         run: |
           test -f build/app/EQVita.vpk
           test -f build/plugin/eq_speaker.skprx
-          sha256sum build/app/EQVita.vpk build/plugin/eq_speaker.skprx > build/EQVita.sha256
+          sha256sum build/app/EQVita.vpk build/plugin/eq_speaker.skprx | sudo tee build/EQVita.sha256 > /dev/null
 
       - name: Upload Vita artifacts
         uses: actions/upload-artifact@v4
