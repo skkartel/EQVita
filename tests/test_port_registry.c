@@ -1,0 +1,172 @@
+#include "../plugin/port_registry.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+static int failures;
+
+#define ASSERT_TRUE(expr) do { \
+    if (!(expr)) { \
+        printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #expr); \
+        failures++; \
+    } \
+} while (0)
+
+#define ASSERT_EQ_I32(actual, expected) do { \
+    int32_t a_ = (int32_t)(actual); \
+    int32_t e_ = (int32_t)(expected); \
+    if (a_ != e_) { \
+        printf("FAIL %s:%d: expected %s == %d, got %d\n", __FILE__, __LINE__, #actual, e_, a_); \
+        failures++; \
+    } \
+} while (0)
+
+#define ASSERT_EQ_U32(actual, expected) do { \
+    uint32_t a_ = (uint32_t)(actual); \
+    uint32_t e_ = (uint32_t)(expected); \
+    if (a_ != e_) { \
+        printf("FAIL %s:%d: expected %s == %u, got %u\n", __FILE__, __LINE__, #actual, e_, a_); \
+        failures++; \
+    } \
+} while (0)
+
+static void test_sparse_port_id_is_tracked_without_using_id_as_array_index(void) {
+    eq_audio_port_registry_t registry;
+    eq_audio_tracked_port_t *slot;
+
+    eq_audio_port_registry_init(&registry);
+
+    slot = eq_audio_port_registry_open(&registry, 256, 0, 256, 48000, EQ_AUDIO_MODE_STEREO);
+    ASSERT_TRUE(slot != NULL);
+    ASSERT_EQ_I32(slot->port_id, 256);
+    ASSERT_EQ_U32(slot->config.len, 256);
+    ASSERT_EQ_U32(slot->config.freq, 48000);
+    ASSERT_EQ_U32(slot->config.channels, 2);
+    ASSERT_EQ_U32(eq_audio_port_registry_count(&registry), 1);
+
+    ASSERT_TRUE(eq_audio_port_registry_find(&registry, 256) == slot);
+    ASSERT_TRUE(eq_audio_port_registry_find(&registry, 7) == NULL);
+}
+
+static void test_sparse_port_config_and_release_use_port_id_lookup(void) {
+    eq_audio_port_registry_t registry;
+    eq_audio_tracked_port_t *slot;
+
+    eq_audio_port_registry_init(&registry);
+
+    ASSERT_TRUE(eq_audio_port_registry_open(&registry, 256, 0, 256, 48000, EQ_AUDIO_MODE_STEREO) != NULL);
+    ASSERT_TRUE(eq_audio_port_registry_set_config(&registry, 256, EQ_AUDIO_KEEP_U32, -1, -1) == 0);
+
+    slot = eq_audio_port_registry_find(&registry, 256);
+    ASSERT_TRUE(slot != NULL);
+    ASSERT_EQ_U32(slot->config.len, 256);
+    ASSERT_EQ_U32(slot->config.freq, 48000);
+    ASSERT_EQ_U32(slot->config.channels, 2);
+
+    ASSERT_TRUE(eq_audio_port_registry_release(&registry, 256) == 0);
+    ASSERT_TRUE(eq_audio_port_registry_find(&registry, 256) == NULL);
+    ASSERT_EQ_U32(eq_audio_port_registry_count(&registry), 0);
+}
+
+static void test_begin_processing_allows_different_ports_but_rejects_same_port_reentry(void) {
+    eq_audio_port_registry_t registry;
+    eq_audio_tracked_port_t *port7;
+    eq_audio_tracked_port_t *port256;
+
+    eq_audio_port_registry_init(&registry);
+    ASSERT_TRUE(eq_audio_port_registry_open(&registry, 7, 0, 256, 48000, EQ_AUDIO_MODE_STEREO) != NULL);
+    ASSERT_TRUE(eq_audio_port_registry_open(&registry, 256, 0, 2048, 48000, EQ_AUDIO_MODE_STEREO) != NULL);
+
+    port7 = eq_audio_port_registry_begin_processing(&registry, 7);
+    ASSERT_TRUE(port7 != NULL);
+    ASSERT_TRUE(eq_audio_port_registry_begin_processing(&registry, 7) == NULL);
+
+    port256 = eq_audio_port_registry_begin_processing(&registry, 256);
+    ASSERT_TRUE(port256 != NULL);
+    ASSERT_TRUE(port256 != port7);
+
+    eq_audio_port_registry_end_processing(port7);
+    eq_audio_port_registry_end_processing(port256);
+
+    ASSERT_TRUE(eq_audio_port_registry_begin_processing(&registry, 7) == port7);
+    eq_audio_port_registry_end_processing(port7);
+}
+
+static void test_release_defers_reset_until_processing_finishes(void) {
+    eq_audio_port_registry_t registry;
+    eq_audio_tracked_port_t *slot;
+
+    eq_audio_port_registry_init(&registry);
+    ASSERT_TRUE(eq_audio_port_registry_open(&registry, 256, 0, 2048, 48000, EQ_AUDIO_MODE_STEREO) != NULL);
+
+    slot = eq_audio_port_registry_begin_processing(&registry, 256);
+    ASSERT_TRUE(slot != NULL);
+    ASSERT_EQ_I32(eq_audio_port_registry_release(&registry, 256), 0);
+    ASSERT_TRUE(eq_audio_port_registry_find(&registry, 256) == NULL);
+    ASSERT_EQ_U32(eq_audio_port_registry_count(&registry), 0);
+    ASSERT_TRUE(slot->processing != 0);
+    ASSERT_TRUE(slot->release_pending != 0);
+
+    eq_audio_port_registry_end_processing(slot);
+    ASSERT_EQ_I32(slot->port_id, EQ_AUDIO_PORT_ID_UNUSED);
+    ASSERT_TRUE(slot->processing == 0);
+    ASSERT_TRUE(slot->release_pending == 0);
+}
+
+static void test_release_pending_slot_is_not_reused_while_processing(void) {
+    eq_audio_port_registry_t registry;
+    eq_audio_tracked_port_t *slot;
+    eq_audio_tracked_port_t *new_slot;
+
+    eq_audio_port_registry_init(&registry);
+    ASSERT_TRUE(eq_audio_port_registry_open(&registry, 256, 0, 2048, 48000, EQ_AUDIO_MODE_STEREO) != NULL);
+
+    slot = eq_audio_port_registry_begin_processing(&registry, 256);
+    ASSERT_TRUE(slot != NULL);
+    ASSERT_EQ_I32(eq_audio_port_registry_release(&registry, 256), 0);
+
+    new_slot = eq_audio_port_registry_open(&registry, 7, 0, 256, 48000, EQ_AUDIO_MODE_STEREO);
+    ASSERT_TRUE(new_slot != NULL);
+    ASSERT_TRUE(new_slot != slot);
+    ASSERT_EQ_I32(slot->port_id, 256);
+    ASSERT_TRUE(slot->processing != 0);
+
+    eq_audio_port_registry_end_processing(slot);
+}
+
+static void test_set_config_defers_until_processing_finishes(void) {
+    eq_audio_port_registry_t registry;
+    eq_audio_tracked_port_t *slot;
+
+    eq_audio_port_registry_init(&registry);
+    ASSERT_TRUE(eq_audio_port_registry_open(&registry, 256, 0, 2048, 48000, EQ_AUDIO_MODE_STEREO) != NULL);
+
+    slot = eq_audio_port_registry_begin_processing(&registry, 256);
+    ASSERT_TRUE(slot != NULL);
+    ASSERT_EQ_I32(eq_audio_port_registry_set_config(&registry, 256, 256, -1, -1), 0);
+    ASSERT_EQ_U32(slot->config.len, 2048);
+    ASSERT_EQ_U32(slot->pending_config_valid, 1);
+
+    eq_audio_port_registry_end_processing(slot);
+    ASSERT_EQ_U32(slot->config.len, 256);
+    ASSERT_EQ_U32(slot->pending_config_valid, 0);
+    ASSERT_TRUE(slot->processing == 0);
+    ASSERT_TRUE(eq_audio_port_registry_find(&registry, 256) == slot);
+}
+
+int main(void) {
+    test_sparse_port_id_is_tracked_without_using_id_as_array_index();
+    test_sparse_port_config_and_release_use_port_id_lookup();
+    test_begin_processing_allows_different_ports_but_rejects_same_port_reentry();
+    test_release_defers_reset_until_processing_finishes();
+    test_release_pending_slot_is_not_reused_while_processing();
+    test_set_config_defers_until_processing_finishes();
+
+    if (failures) {
+        printf("%d port-registry failure(s)\n", failures);
+        return 1;
+    }
+
+    return 0;
+}

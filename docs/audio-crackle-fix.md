@@ -1,5 +1,7 @@
 # Audio Crackle Fix Verification
 
+This file records earlier crackle fixes. Current stabilization adds further changes: sparse audio-port tracking, non-blocking audio-hook busy bypass, cheaper flat-band DSP, no-op target detection, soft-knee overflow limiting, safer clip/peak accounting, per-port scratch buffers, deferred config changes, and explicit bypass reasons for unsafe port states.
+
 ## Issues & Fixes
 
 ### 1. Filter State Reset
@@ -26,10 +28,10 @@
 
 1.  **Build & Install:**
     ```bash
-    cd eq-master && mkdir build && cd build
-    cmake .. && make
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+    cmake --build build --parallel
     ```
-    Copy `plugin/eq_speaker.skprx` to `ur0:tai/`.
+    Copy `build/plugin/eq_speaker.skprx` to `ur0:tai/`.
 
 2.  **Test:**
     *   **Preamp:** Verify clarity at -6dB, -12dB, and 0dB.
@@ -43,5 +45,10 @@ New debug counters are available in `eq_status_t`:
 *   `debug_len`: Number of frames processed in last call.
 *   `debug_channels`: Number of channels processed.
 *   `debug_run_count`: Total number of hook executions.
+*   `debug_active_ports`: Number of currently tracked sparse audio ports.
+*   `debug_busy_bypass_count`: Number of times the output hook skipped DSP rather than blocking on the audio mutex.
+*   `debug_unknown_port_count`: Number of output calls for ports not tracked by the plugin.
+*   `debug_last_us` / `debug_max_us`: Last and maximum hook processing time in microseconds.
+*   `clip_events`, `peak_l`, `peak_r`: Cumulative limiter hits and recent peak levels copied into `app.log`.
 
-Monitor these values to ensure `debug_len` matches expected buffer sizes (e.g., 256, 512, 1024) and `debug_channels` is correct (usually 2).
+Monitor these values to ensure `debug_len` matches expected buffer sizes (e.g., 256, 512, 1024), `debug_channels` is correct (usually 2), `debug_unknown_port_count` no longer rises repeatedly for sparse port IDs such as `256`, and `clip_events` does not climb during settings that should sound clean.
