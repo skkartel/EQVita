@@ -1,7 +1,7 @@
 name: App bug
 description: UI, preset saving, theme, install, or non-audio app issue.
 title: "[app] "
-labels: ["bug"]
+labels: ["bug", "area: app"]
 body:
   - type: input
     id: version

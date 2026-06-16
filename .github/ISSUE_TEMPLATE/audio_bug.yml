@@ -1,7 +1,7 @@
 name: Audio bug
 description: Crackle, distortion, bypass, route, or EQ behavior issue.
 title: "[audio] "
-labels: ["bug"]
+labels: ["bug", "area: audio", "needs: log", "needs: hardware test"]
 body:
   - type: markdown
     attributes:

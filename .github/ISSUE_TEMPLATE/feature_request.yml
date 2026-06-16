@@ -1,7 +1,7 @@
 name: Feature request
 description: Suggest a small improvement or quality-of-life idea.
 title: "[feature] "
-labels: ["enhancement"]
+labels: ["enhancement", "kind: idea"]
 body:
   - type: textarea
     id: idea

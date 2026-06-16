@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Questions, presets, and setup chat
+    url: https://github.com/shev0k/EQVita/discussions
+    about: Ask questions, share presets, or talk EQVita tweaks here.
   - name: VitaDB page
     url: https://www.rinnegatamante.eu/vitadb/#/info/1353
     about: EQVita on VitaDB.
