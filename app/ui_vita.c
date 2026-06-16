@@ -613,6 +613,55 @@ void eq_ui_draw_message(const char *message)
     draw_text_fit((float)x + 22, 477, TEXT_SIZE, t->text, message, w - 44);
 }
 
+void eq_ui_draw_confirm_dialog(const char *title,
+                               const char *body,
+                               const char * const *actions,
+                               int action_count,
+                               int selected_action)
+{
+    const eq_ui_theme_t *t = theme();
+    int dialog_h;
+    int x = EQ_UI_DIALOG_X;
+    int y = EQ_UI_DIALOG_Y;
+    int w = EQ_UI_DIALOG_W;
+
+    if (!actions || action_count <= 0) {
+        return;
+    }
+    if (action_count > 4) {
+        action_count = 4;
+    }
+    if (selected_action < 0) {
+        selected_action = 0;
+    }
+    if (selected_action >= action_count) {
+        selected_action = action_count - 1;
+    }
+
+    dialog_h = 92 + action_count * EQ_UI_DIALOG_ROW_H + (action_count - 1) * EQ_UI_DIALOG_ROW_GAP + 28;
+
+    vita2d_draw_rectangle(0, 0, EQ_UI_SCREEN_W, EQ_UI_SCREEN_H, color_alpha(C(0, 0, 0, 255), 104));
+    vita2d_draw_rectangle((float)x, (float)y, (float)w, (float)dialog_h, mix_color(t->chrome, t->row, 2, 3));
+    vita2d_draw_rectangle((float)x, (float)y, (float)w, 4.0f, t->accent);
+    vita2d_draw_rectangle((float)x, (float)(y + dialog_h - 4), (float)w, 4.0f, color_alpha(t->accent, 160));
+
+    draw_text_fit((float)x + 28, (float)y + 34, TEXT_SIZE, t->text, title, w - 56);
+    draw_text_fit((float)x + 28, (float)y + 64, TEXT_SIZE, t->subtext, body, w - 56);
+
+    for (int i = 0; i < action_count; ++i) {
+        int row_y = EQ_UI_DIALOG_ROW_Y + i * (EQ_UI_DIALOG_ROW_H + EQ_UI_DIALOG_ROW_GAP);
+        int selected = i == selected_action;
+        unsigned int back = selected ? t->selected_row : mix_color(t->row, t->bg_bottom, 2, 3);
+        unsigned int text = selected ? t->selected_text : t->text;
+
+        vita2d_draw_rectangle((float)(x + 18), (float)row_y, (float)(w - 36), EQ_UI_DIALOG_ROW_H, back);
+        if (selected) {
+            vita2d_draw_rectangle((float)(x + 18), (float)row_y, 6.0f, EQ_UI_DIALOG_ROW_H, t->accent);
+        }
+        draw_text_fit((float)x + 42, (float)row_y + 31, TEXT_SIZE, text, actions[i], w - 84);
+    }
+}
+
 void eq_ui_draw_status_chip(float x,
                             float y,
                             const char *label,

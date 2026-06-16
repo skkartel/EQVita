@@ -12,6 +12,12 @@
 #define EQ_UI_FOOTER_Y 500
 #define EQ_UI_MAX_VISIBLE_ROWS 7
 #define EQ_UI_DEFAULT_THEME_INDEX 13
+#define EQ_UI_DIALOG_X 210
+#define EQ_UI_DIALOG_Y 164
+#define EQ_UI_DIALOG_W 540
+#define EQ_UI_DIALOG_ROW_Y 272
+#define EQ_UI_DIALOG_ROW_H 48
+#define EQ_UI_DIALOG_ROW_GAP 6
 
 typedef struct eq_ui_row_bounds
 {
@@ -47,6 +53,11 @@ void eq_ui_draw_shell(const char *title,
                       const char *right_status);
 void eq_ui_draw_footer(const char *left, const char *center, const char *right);
 void eq_ui_draw_message(const char *message);
+void eq_ui_draw_confirm_dialog(const char *title,
+                               const char *body,
+                               const char * const *actions,
+                               int action_count,
+                               int selected_action);
 void eq_ui_draw_row(int visible_index,
                     int row_index,
                     int selected,

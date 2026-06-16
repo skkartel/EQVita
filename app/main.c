@@ -147,6 +147,8 @@ static int g_selected[SCREEN_COUNT];
 static int g_scroll_top[SCREEN_COUNT];
 static eq_control_t g_eq_entry_control;
 static int g_eq_entry_valid = 0;
+static int g_exit_prompt_active = 0;
+static int g_exit_prompt_selected = 0;
 static eq_ui_row_bounds_t g_row_bounds[EQ_UI_MAX_VISIBLE_ROWS];
 static int g_row_bound_count = 0;
 
@@ -307,6 +309,7 @@ static void init_button_mapping(void)
 
 static int save_preset(void);
 static int save_boot_state(void);
+static void change_screen(app_screen_t screen);
 
 static void set_message(const char *fmt, ...)
 {
@@ -817,7 +820,7 @@ static void save_boot_state_with_message(void)
     }
 }
 
-static void save_preset_with_message(void)
+static int save_preset_with_message_result(void)
 {
     int res = save_preset();
     if (res >= 0) {
@@ -833,9 +836,16 @@ static void save_preset_with_message(void)
         } else {
             set_message("Preset saved, startup save failed (%d)", boot_res);
         }
+        return 0;
     } else {
         set_message("Save failed (%d)", res);
+        return res;
     }
+}
+
+static void save_preset_with_message(void)
+{
+    (void)save_preset_with_message_result();
 }
 
 static void save_as_next_preset(void)
@@ -891,6 +901,74 @@ static void restore_eq_entry(void)
     }
     if (apply_control_candidate(&g_eq_entry_control, 1) == 0) {
         set_message("Restored screen entry settings");
+    }
+}
+
+static int is_eq_edit_screen(app_screen_t screen)
+{
+    return screen == SCREEN_SIMPLE || screen == SCREEN_ADVANCED;
+}
+
+static int eq_entry_changed(void)
+{
+    if (!g_eq_entry_valid) {
+        return 0;
+    }
+    return memcmp(&g_control, &g_eq_entry_control, sizeof(g_control)) != 0;
+}
+
+static int should_prompt_before_leaving_eq(void)
+{
+    return is_eq_edit_screen(g_screen) &&
+        eqvita_app_state_current_preset_dirty(&g_app_state) &&
+        eq_entry_changed();
+}
+
+static void close_exit_prompt(void)
+{
+    g_exit_prompt_active = 0;
+    g_exit_prompt_selected = 0;
+}
+
+static void request_leave_current_screen(void)
+{
+    if (should_prompt_before_leaving_eq()) {
+        g_exit_prompt_active = 1;
+        g_exit_prompt_selected = 0;
+        g_message_frames = 0;
+        return;
+    }
+    close_exit_prompt();
+    change_screen(SCREEN_HOME);
+}
+
+static void discard_eq_edits_and_leave(void)
+{
+    int res = load_preset();
+    if (res >= 0) {
+        set_message("Unsaved edits discarded");
+        close_exit_prompt();
+        change_screen(SCREEN_HOME);
+    } else {
+        set_message("Could not restore preset (%d)", res);
+    }
+}
+
+static void activate_exit_prompt(void)
+{
+    if (!g_exit_prompt_active) {
+        return;
+    }
+
+    if (g_exit_prompt_selected == 0) {
+        if (save_preset_with_message_result() >= 0) {
+            close_exit_prompt();
+            change_screen(SCREEN_HOME);
+        }
+    } else if (g_exit_prompt_selected == 1) {
+        discard_eq_edits_and_leave();
+    } else {
+        close_exit_prompt();
     }
 }
 
@@ -1624,14 +1702,25 @@ static void render_frame(void)
     char subtitle[96];
     char footer_left[32];
     char footer_center[64];
+    const char *exit_prompt_actions[] = {
+        "Save to this slot",
+        "Discard and leave",
+        "Keep editing"
+    };
+    char exit_prompt_title[64];
 
     ensure_selection_visible();
-    snprintf(footer_left, sizeof(footer_left), "%s %s",
-             button_name(g_cancel_button), g_screen == SCREEN_HOME ? "Exit" : "Back");
-    if (selected_row_kind() == EQ_UI_ROW_READONLY) {
-        snprintf(footer_center, sizeof(footer_center), "START Bypass");
+    if (g_exit_prompt_active) {
+        snprintf(footer_left, sizeof(footer_left), "%s Back", button_name(g_cancel_button));
+        snprintf(footer_center, sizeof(footer_center), "%s Select", button_name(g_confirm_button));
     } else {
-        snprintf(footer_center, sizeof(footer_center), "%s Select   START Bypass", button_name(g_confirm_button));
+        snprintf(footer_left, sizeof(footer_left), "%s %s",
+                 button_name(g_cancel_button), g_screen == SCREEN_HOME ? "Exit" : "Back");
+        if (selected_row_kind() == EQ_UI_ROW_READONLY) {
+            snprintf(footer_center, sizeof(footer_center), "START Bypass");
+        } else {
+            snprintf(footer_center, sizeof(footer_center), "%s Select   START Bypass", button_name(g_confirm_button));
+        }
     }
 
     if (g_plugin_compatible) {
@@ -1652,6 +1741,14 @@ static void render_frame(void)
     if (g_message_frames > 0 && g_message[0]) {
         eq_ui_draw_message(g_message);
         g_message_frames--;
+    }
+    if (g_exit_prompt_active) {
+        snprintf(exit_prompt_title, sizeof(exit_prompt_title), "Save changes to preset slot %d?", g_preset_slot + 1);
+        eq_ui_draw_confirm_dialog(exit_prompt_title,
+                                  "Live EQ keeps playing either way.",
+                                  exit_prompt_actions,
+                                  3,
+                                  g_exit_prompt_selected);
     }
     eq_ui_end_frame();
 }
@@ -1786,6 +1883,20 @@ static int row_at_point(int x, int y)
     return -1;
 }
 
+static int exit_prompt_row_at_point(int x, int y)
+{
+    if (x < EQ_UI_DIALOG_X + 18 || x >= EQ_UI_DIALOG_X + EQ_UI_DIALOG_W - 18) {
+        return -1;
+    }
+    for (int i = 0; i < 3; ++i) {
+        int row_y = EQ_UI_DIALOG_ROW_Y + i * (EQ_UI_DIALOG_ROW_H + EQ_UI_DIALOG_ROW_GAP);
+        if (y >= row_y && y < row_y + EQ_UI_DIALOG_ROW_H) {
+            return i;
+        }
+    }
+    return -1;
+}
+
 static void handle_touch(void)
 {
     SceTouchData touch;
@@ -1800,6 +1911,34 @@ static void handle_touch(void)
 
     has_touch = touch.reportNum > 0;
     if (has_touch && touch_to_screen(&touch.report[0], &x, &y) < 0) {
+        return;
+    }
+
+    if (g_exit_prompt_active) {
+        if (has_touch && !g_touch_down) {
+            int row;
+            g_touch_down = 1;
+            g_touch_start_x = x;
+            g_touch_start_y = y;
+            g_touch_last_y = y;
+            g_touch_moved = 0;
+            row = exit_prompt_row_at_point(x, y);
+            if (row >= 0) {
+                g_exit_prompt_selected = row;
+            }
+        } else if (has_touch && g_touch_down) {
+            if ((x - g_touch_start_x > 18 || g_touch_start_x - x > 18) ||
+                (y - g_touch_start_y > 18 || g_touch_start_y - y > 18)) {
+                g_touch_moved = 1;
+            }
+        } else if (!has_touch && g_touch_down) {
+            int row = exit_prompt_row_at_point(g_touch_start_x, g_touch_start_y);
+            if (!g_touch_moved && row >= 0) {
+                g_exit_prompt_selected = row;
+                activate_exit_prompt();
+            }
+            g_touch_down = 0;
+        }
         return;
     }
 
@@ -1926,7 +2065,17 @@ int main(void)
 
         last = pad;
 
-        if (active_input & SCE_CTRL_UP) {
+        if (g_exit_prompt_active) {
+            if (active_input & SCE_CTRL_UP) {
+                g_exit_prompt_selected = (g_exit_prompt_selected + 2) % 3;
+            } else if (active_input & SCE_CTRL_DOWN) {
+                g_exit_prompt_selected = (g_exit_prompt_selected + 1) % 3;
+            } else if (newly & g_confirm_button) {
+                activate_exit_prompt();
+            } else if (newly & g_cancel_button) {
+                close_exit_prompt();
+            }
+        } else if (active_input & SCE_CTRL_UP) {
             move_selection(-1);
         } else if (active_input & SCE_CTRL_DOWN) {
             move_selection(1);
@@ -1944,7 +2093,7 @@ int main(void)
             if (g_screen == SCREEN_HOME) {
                 break;
             }
-            change_screen(SCREEN_HOME);
+            request_leave_current_screen();
         } else if (newly & SCE_CTRL_TRIANGLE) {
             change_screen(SCREEN_ABOUT);
         } else if (newly & SCE_CTRL_START) {

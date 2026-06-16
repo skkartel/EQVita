@@ -246,6 +246,39 @@ static void test_reset_defaults_restores_safe_headroom(void)
     free(source);
 }
 
+static void test_eq_screens_prompt_before_leaving_unsaved_preset(void)
+{
+    char path[512];
+    char *source;
+    char *loop_cancel;
+    char *loop_cancel_end;
+
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    source = read_file(path);
+
+    ASSERT_TRUE(strstr(source, "exit_prompt_active") != NULL);
+    ASSERT_TRUE(strstr(source, "Save changes to preset slot") != NULL);
+    ASSERT_TRUE(strstr(source, "Save to this slot") != NULL);
+    ASSERT_TRUE(strstr(source, "Discard and leave") != NULL);
+    ASSERT_TRUE(strstr(source, "Keep editing") != NULL);
+    ASSERT_TRUE(strstr(source, "static void request_leave_current_screen(void)") != NULL);
+    ASSERT_TRUE(strstr(source, "static void discard_eq_edits_and_leave(void)") != NULL);
+    ASSERT_TRUE(strstr(source, "eqvita_app_state_current_preset_dirty(&g_app_state)") != NULL);
+    ASSERT_TRUE(strstr(source, "eq_ui_draw_confirm_dialog(") != NULL);
+    ASSERT_TRUE(strstr(source, "load_preset()") != NULL);
+    ASSERT_TRUE(strstr(source, "Unsaved edits discarded") != NULL);
+
+    loop_cancel = strstr(source, "newly & g_cancel_button");
+    ASSERT_TRUE(loop_cancel != NULL);
+    loop_cancel_end = strstr(loop_cancel + 1, "} else if (newly & SCE_CTRL_TRIANGLE)");
+    ASSERT_TRUE(loop_cancel_end != NULL);
+
+    ASSERT_TRUE(range_contains(loop_cancel, loop_cancel_end, "request_leave_current_screen()"));
+    ASSERT_TRUE(!range_contains(loop_cancel, loop_cancel_end, "change_screen(SCREEN_HOME)"));
+
+    free(source);
+}
+
 int main(void)
 {
     test_ui_waits_for_rendering_before_resource_teardown();
@@ -258,5 +291,6 @@ int main(void)
     test_status_log_splits_slowest_block_context();
     test_builtin_presets_persist_active_slot_after_apply();
     test_reset_defaults_restores_safe_headroom();
+    test_eq_screens_prompt_before_leaving_unsaved_preset();
     return 0;
 }
