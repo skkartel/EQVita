@@ -556,14 +556,18 @@ static void test_music_browser_loads_async_without_auto_pausing_preview(void)
     ASSERT_TRUE(strstr(source, "browser_async_poll") != NULL);
     ASSERT_TRUE(strstr(source, "browser_async_cancel") != NULL);
 
-    open_roots = strstr(source, "static void open_music_browser_roots(void)\n{");
+    open_roots = strstr(source, "static void open_music_browser_roots(void)");
+    ASSERT_TRUE(open_roots != NULL);
+    open_roots = strstr(open_roots + 1, "static void open_music_browser_roots(void)");
     ASSERT_TRUE(open_roots != NULL);
     open_roots_end = strstr(open_roots + 1, "static void ");
     ASSERT_TRUE(open_roots_end != NULL);
     ASSERT_TRUE(range_contains(open_roots, open_roots_end, "browser_async_start(NULL, 1)"));
     ASSERT_TRUE(!range_contains(open_roots, open_roots_end, "eqvita_media_browser_read_roots(&g_media_listing)"));
 
-    open_path = strstr(source, "static void open_music_browser_path(const char *path)\n{");
+    open_path = strstr(source, "static void open_music_browser_path(const char *path)");
+    ASSERT_TRUE(open_path != NULL);
+    open_path = strstr(open_path + 1, "static void open_music_browser_path(const char *path)");
     ASSERT_TRUE(open_path != NULL);
     open_path_end = strstr(open_path + 1, "static void ");
     ASSERT_TRUE(open_path_end != NULL);

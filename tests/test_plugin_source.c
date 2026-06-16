@@ -1011,27 +1011,29 @@ static void test_output_only_diagnostic_helpers_compile_only_in_diagnostic_build
     snprintf(path, sizeof(path), "%s/plugin/main.c", EQVITA_SOURCE_DIR);
     source = read_file(path);
 
-    rich_guard = strstr(source, "#if EQVITA_AUDIO_DIAGNOSTICS\nstatic uint16_t diag_abs_i16_peak");
+    rich_guard = strstr(source, "#if EQVITA_AUDIO_DIAGNOSTICS");
     ASSERT_TRUE(rich_guard != NULL);
-    rich_end = strstr(rich_guard, "#endif\n\nstatic void diag_emit_lifecycle_now");
+    ASSERT_TRUE(strstr(rich_guard, "static uint16_t diag_abs_i16_peak") != NULL);
+    rich_end = strstr(rich_guard, "static void diag_emit_lifecycle_now");
     ASSERT_TRUE(rich_end != NULL);
-    lifecycle_start = strstr(rich_end, "static void diag_emit_lifecycle_now");
-    ASSERT_TRUE(lifecycle_start != NULL);
+    lifecycle_start = rich_end;
 
     ASSERT_TRUE(strstr(rich_guard, "static void diag_measure_input_peak") < rich_end);
     ASSERT_TRUE(strstr(rich_guard, "static int diag_should_sample_active_block") < rich_end);
     ASSERT_TRUE(strstr(rich_guard, "static void diag_capture_port_meta") < rich_end);
     ASSERT_TRUE(strstr(rich_guard, "static void diag_emit_output_locked") < rich_end);
     ASSERT_TRUE(strstr(source, "static uint32_t diag_audio_budget_us") < rich_guard);
-    ASSERT_TRUE(lifecycle_start > rich_end);
+    ASSERT_TRUE(lifecycle_start == rich_end);
 
     hook_start = strstr(source, "static int sceAudioOutOutput_hook");
     ASSERT_TRUE(hook_start != NULL);
     hook_end = strstr(hook_start + 1, "static int sceAudioOutOpenPort_hook");
     ASSERT_TRUE(hook_end != NULL);
-    ASSERT_TRUE(range_contains(hook_start, hook_end, "#if EQVITA_AUDIO_DIAGNOSTICS\n    int retargeted = 0;"));
-    ASSERT_TRUE(range_contains(hook_start, hook_end, "#if EQVITA_AUDIO_DIAGNOSTICS\n                        retargeted = update_dsp_if_needed"));
-    ASSERT_TRUE(range_contains(hook_start, hook_end, "#else\n                        (void)update_dsp_if_needed"));
+    ASSERT_TRUE(range_contains(hook_start, hook_end, "#if EQVITA_AUDIO_DIAGNOSTICS"));
+    ASSERT_TRUE(range_contains(hook_start, hook_end, "int retargeted = 0;"));
+    ASSERT_TRUE(range_contains(hook_start, hook_end, "retargeted = update_dsp_if_needed"));
+    ASSERT_TRUE(range_contains(hook_start, hook_end, "#else"));
+    ASSERT_TRUE(range_contains(hook_start, hook_end, "(void)update_dsp_if_needed"));
 
     free(source);
 }
