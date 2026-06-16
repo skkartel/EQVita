@@ -1,12 +1,16 @@
 #include "media_browser.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef EQVITA_HOST_TESTS
 #include <psp2/io/dirent.h>
 #include <psp2/io/stat.h>
+#include <psp2/kernel/threadmgr.h>
 #endif
+
+#define BROWSER_READ_YIELD_ENTRIES 16
 
 static int ascii_tolower(int c)
 {
@@ -243,32 +247,38 @@ int eqvita_media_browser_read_roots(eqvita_media_listing_t *listing)
         "xmc0:",
         "ur0:"
     };
-    eqvita_media_listing_t next;
+    eqvita_media_listing_t *next;
 
     if (!listing) {
         return -1;
     }
 
-    memset(&next, 0, sizeof(next));
-    snprintf(next.path, sizeof(next.path), "%s", "Storage");
+    next = (eqvita_media_listing_t *)malloc(sizeof(*next));
+    if (!next) {
+        return -1;
+    }
+
+    memset(next, 0, sizeof(*next));
+    snprintf(next->path, sizeof(next->path), "%s", "Storage");
 
 #ifdef EQVITA_HOST_TESTS
-    add_entry(&next, EQVITA_MEDIA_ENTRY_DIRECTORY, "ux0:", "ux0:");
-    add_entry(&next, EQVITA_MEDIA_ENTRY_DIRECTORY, "ux0:music/", "ux0:music/");
+    add_entry(next, EQVITA_MEDIA_ENTRY_DIRECTORY, "ux0:", "ux0:");
+    add_entry(next, EQVITA_MEDIA_ENTRY_DIRECTORY, "ux0:music/", "ux0:music/");
 #else
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); ++i) {
         SceIoStat stat;
         memset(&stat, 0, sizeof(stat));
         if (sceIoGetstat(roots[i], &stat) >= 0) {
-            add_entry(&next, EQVITA_MEDIA_ENTRY_DIRECTORY, roots[i], roots[i]);
+            add_entry(next, EQVITA_MEDIA_ENTRY_DIRECTORY, roots[i], roots[i]);
             if (strcmp(roots[i], "ux0:") == 0) {
-                add_entry(&next, EQVITA_MEDIA_ENTRY_DIRECTORY, "ux0:music/", "ux0:music/");
+                add_entry(next, EQVITA_MEDIA_ENTRY_DIRECTORY, "ux0:music/", "ux0:music/");
             }
         }
     }
 #endif
 
-    *listing = next;
+    *listing = *next;
+    free(next);
     return listing->count;
 }
 
@@ -284,8 +294,9 @@ int eqvita_media_browser_read_dir(eqvita_media_listing_t *listing, const char *p
     char child[EQVITA_MEDIA_MAX_PATH];
     char open_path[EQVITA_MEDIA_MAX_PATH];
     char parent[EQVITA_MEDIA_MAX_PATH];
-    eqvita_media_listing_t next;
+    eqvita_media_listing_t *next;
     int path_len;
+    int read_entries = 0;
 
     if (!listing || !path || !*path) {
         return -1;
@@ -301,19 +312,26 @@ int eqvita_media_browser_read_dir(eqvita_media_listing_t *listing, const char *p
         return fd;
     }
 
-    memset(&next, 0, sizeof(next));
-    path_len = snprintf(next.path, sizeof(next.path), "%s", open_path);
-    if (path_len < 0 || path_len >= (int)sizeof(next.path)) {
+    next = (eqvita_media_listing_t *)malloc(sizeof(*next));
+    if (!next) {
         sceIoDclose(fd);
         return -1;
     }
 
+    memset(next, 0, sizeof(*next));
+    path_len = snprintf(next->path, sizeof(next->path), "%s", open_path);
+    if (path_len < 0 || path_len >= (int)sizeof(next->path)) {
+        sceIoDclose(fd);
+        free(next);
+        return -1;
+    }
+
     if (eqvita_media_browser_parent_path(parent, sizeof(parent), open_path) == 0) {
-        add_entry(&next, EQVITA_MEDIA_ENTRY_PARENT, "..", parent);
+        add_entry(next, EQVITA_MEDIA_ENTRY_PARENT, "..", parent);
     }
 
     memset(&dir, 0, sizeof(dir));
-    while (sceIoDread(fd, &dir) > 0 && next.count < EQVITA_MEDIA_MAX_ENTRIES) {
+    while (sceIoDread(fd, &dir) > 0 && next->count < EQVITA_MEDIA_MAX_ENTRIES) {
         if (strcmp(dir.d_name, ".") == 0 || strcmp(dir.d_name, "..") == 0) {
             memset(&dir, 0, sizeof(dir));
             continue;
@@ -328,15 +346,20 @@ int eqvita_media_browser_read_dir(eqvita_media_listing_t *listing, const char *p
                 child[child_len] = '/';
                 child[child_len + 1] = '\0';
             }
-            add_entry(&next, EQVITA_MEDIA_ENTRY_DIRECTORY, dir.d_name, child);
+            add_entry(next, EQVITA_MEDIA_ENTRY_DIRECTORY, dir.d_name, child);
         } else if (eqvita_media_browser_is_supported_file(dir.d_name)) {
-            add_entry(&next, EQVITA_MEDIA_ENTRY_FILE, dir.d_name, child);
+            add_entry(next, EQVITA_MEDIA_ENTRY_FILE, dir.d_name, child);
+        }
+        read_entries++;
+        if ((read_entries % BROWSER_READ_YIELD_ENTRIES) == 0) {
+            sceKernelDelayThread(500);
         }
         memset(&dir, 0, sizeof(dir));
     }
 
     sceIoDclose(fd);
-    *listing = next;
+    *listing = *next;
+    free(next);
     return listing->count;
 #endif
 }

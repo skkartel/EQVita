@@ -38,6 +38,11 @@ typedef struct eqvita_media_player_status
     int volume;
     int loop;
     int last_error;
+    uint32_t underrun_count;
+    uint32_t ring_fill;
+    uint32_t ring_capacity;
+    uint32_t decode_max_us;
+    uint32_t output_max_us;
 } eqvita_media_player_status_t;
 
 typedef struct eqvita_media_player
@@ -60,6 +65,7 @@ void eqvita_media_player_shutdown(eqvita_media_player_t *player);
 int eqvita_media_player_open(eqvita_media_player_t *player, const char *path);
 void eqvita_media_player_stop(eqvita_media_player_t *player);
 void eqvita_media_player_toggle_pause(eqvita_media_player_t *player);
+void eqvita_media_player_set_paused(eqvita_media_player_t *player, int paused);
 void eqvita_media_player_set_loop(eqvita_media_player_t *player, int loop);
 void eqvita_media_player_adjust_volume(eqvita_media_player_t *player, int delta);
 eqvita_media_player_status_t eqvita_media_player_status(const eqvita_media_player_t *player);

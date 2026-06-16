@@ -9,6 +9,7 @@
 #include <mpg123.h>
 #include <psp2/audioout.h>
 #include <psp2/io/fcntl.h>
+#include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
 #include <vorbis/vorbisfile.h>
 #endif
@@ -16,6 +17,7 @@
 #define PREVIEW_FRAMES 1024
 #define PREVIEW_THREAD_PRIORITY 0x60
 #define PREVIEW_THREAD_STACK (64 * 1024)
+#define PREVIEW_THREAD_STOP_TIMEOUT_US 250000
 
 typedef struct eqvita_media_decoder
 {
@@ -75,6 +77,18 @@ static void eqvita_media_player_set_state(eqvita_media_player_t *player, eqvita_
     eqvita_media_player_unlock(player);
 }
 
+static void eqvita_media_player_set_state_if_changed(eqvita_media_player_t *player, eqvita_media_player_state_t state)
+{
+    if (!player) {
+        return;
+    }
+    eqvita_media_player_lock(player);
+    if (player->status.state != state) {
+        player->status.state = state;
+    }
+    eqvita_media_player_unlock(player);
+}
+
 static void eqvita_media_player_set_error(eqvita_media_player_t *player, int error)
 {
     if (!player) {
@@ -111,6 +125,71 @@ static int eqvita_media_player_command_snapshot(eqvita_media_player_t *player,
     eqvita_media_player_unlock(player);
 
     return stop;
+}
+
+#ifndef EQVITA_HOST_TESTS
+static uint32_t elapsed_time_us(uint32_t start)
+{
+    return (uint32_t)(sceKernelGetProcessTimeLow() - start);
+}
+
+static void eqvita_media_player_note_decode_time(eqvita_media_player_t *player, uint32_t elapsed)
+{
+    if (!player) {
+        return;
+    }
+    eqvita_media_player_lock(player);
+    if (elapsed > player->status.decode_max_us) {
+        player->status.decode_max_us = elapsed;
+    }
+    eqvita_media_player_unlock(player);
+}
+
+static void eqvita_media_player_note_output_time(eqvita_media_player_t *player, uint32_t elapsed)
+{
+    if (!player) {
+        return;
+    }
+    eqvita_media_player_lock(player);
+    if (elapsed > player->status.output_max_us) {
+        player->status.output_max_us = elapsed;
+    }
+    eqvita_media_player_unlock(player);
+}
+
+static void eqvita_media_player_wait_or_delete_thread(SceUID thread_id, unsigned int timeout_us)
+{
+    SceUInt timeout = timeout_us;
+    int ret;
+
+    if (thread_id < 0) {
+        return;
+    }
+
+    ret = sceKernelWaitThreadEnd(thread_id, NULL, &timeout);
+    if (ret < 0) {
+        sceKernelDeleteThread(thread_id);
+    }
+}
+
+static int eqvita_media_player_wait_thread(SceUID thread_id, unsigned int timeout_us)
+{
+    SceUInt timeout = timeout_us;
+
+    if (thread_id < 0) {
+        return 0;
+    }
+
+    return sceKernelWaitThreadEnd(thread_id, NULL, &timeout);
+}
+#endif
+
+static void decoder_zero_tail(int16_t *out, int got_bytes, int want_bytes)
+{
+    if (!out || got_bytes < 0 || got_bytes >= want_bytes) {
+        return;
+    }
+    memset(((char *)out) + got_bytes, 0, (size_t)(want_bytes - got_bytes));
 }
 
 static eqvita_media_player_format_t format_from_path(const char *path)
@@ -411,8 +490,6 @@ static int decoder_read(eqvita_media_decoder_t *decoder, int16_t *out, int frame
 
     channels = decoder->channels;
     want_bytes = frames * channels * (int)sizeof(int16_t);
-    memset(out, 0, (size_t)want_bytes);
-
     switch (decoder->format) {
         case EQVITA_MEDIA_FORMAT_OGG:
             while (got_bytes < want_bytes) {
@@ -462,6 +539,7 @@ static int decoder_read(eqvita_media_decoder_t *decoder, int16_t *out, int frame
             return -1;
     }
 
+    decoder_zero_tail(out, got_bytes, want_bytes);
     return got_bytes / (channels * (int)sizeof(int16_t));
 }
 
@@ -477,6 +555,7 @@ static int player_thread(unsigned int args, void *argp)
 {
     eqvita_media_player_t *player = NULL;
     eqvita_media_decoder_t *decoder;
+    eqvita_media_player_state_t last_thread_state = EQVITA_MEDIA_PLAYER_STOPPED;
     int16_t buffer[PREVIEW_FRAMES * 2];
 
     if (args == sizeof(player) && argp) {
@@ -494,19 +573,30 @@ static int player_thread(unsigned int args, void *argp)
         int paused = 0;
         int loop = 0;
         int volume = EQVITA_MEDIA_PLAYER_DEFAULT_VOLUME;
+        int output_ret;
+        uint32_t start_us;
 
         if (eqvita_media_player_command_snapshot(player, &paused, &loop, &volume)) {
             break;
         }
 
         if (paused) {
-            eqvita_media_player_set_state(player, EQVITA_MEDIA_PLAYER_PAUSED);
+            if (last_thread_state != EQVITA_MEDIA_PLAYER_PAUSED) {
+                eqvita_media_player_set_state_if_changed(player, EQVITA_MEDIA_PLAYER_PAUSED);
+                last_thread_state = EQVITA_MEDIA_PLAYER_PAUSED;
+            }
             sceKernelDelayThread(10000);
             continue;
         }
 
-        eqvita_media_player_set_state(player, EQVITA_MEDIA_PLAYER_PLAYING);
+        if (last_thread_state != EQVITA_MEDIA_PLAYER_PLAYING) {
+            eqvita_media_player_set_state_if_changed(player, EQVITA_MEDIA_PLAYER_PLAYING);
+            last_thread_state = EQVITA_MEDIA_PLAYER_PLAYING;
+        }
+
+        start_us = sceKernelGetProcessTimeLow();
         frames = decoder_read(decoder, buffer, PREVIEW_FRAMES);
+        eqvita_media_player_note_decode_time(player, elapsed_time_us(start_us));
         if (frames < 0) {
             eqvita_media_player_set_error(player, frames);
             break;
@@ -518,10 +608,19 @@ static int player_thread(unsigned int args, void *argp)
             eqvita_media_player_set_state(player, EQVITA_MEDIA_PLAYER_FINISHED);
             break;
         }
+        if (eqvita_media_player_command_snapshot(player, NULL, NULL, NULL)) {
+            break;
+        }
 
-        apply_volume(buffer, frames * decoder->channels, volume);
-        if (sceAudioOutOutput(player->audio_port, buffer) < 0) {
-            eqvita_media_player_set_error(player, -1);
+        if (volume != EQVITA_MEDIA_PLAYER_VOLUME_MAX) {
+            apply_volume(buffer, frames * decoder->channels, volume);
+        }
+
+        start_us = sceKernelGetProcessTimeLow();
+        output_ret = sceAudioOutOutput(player->audio_port, buffer);
+        eqvita_media_player_note_output_time(player, elapsed_time_us(start_us));
+        if (output_ret < 0) {
+            eqvita_media_player_set_error(player, output_ret);
             break;
         }
     }
@@ -539,6 +638,7 @@ void eqvita_media_player_init(eqvita_media_player_t *player)
     memset(player, 0, sizeof(*player));
     player->status.state = EQVITA_MEDIA_PLAYER_STOPPED;
     player->status.volume = EQVITA_MEDIA_PLAYER_DEFAULT_VOLUME;
+    player->status.ring_capacity = 1;
     player->thread_id = -1;
     player->audio_port = -1;
 #ifndef EQVITA_HOST_TESTS
@@ -559,7 +659,15 @@ void eqvita_media_player_stop(eqvita_media_player_t *player)
     player->stop_requested = 1;
     eqvita_media_player_unlock(player);
     if (player->thread_id >= 0) {
-        sceKernelWaitThreadEnd(player->thread_id, NULL, NULL);
+        if (eqvita_media_player_wait_thread(player->thread_id,
+                                            PREVIEW_THREAD_STOP_TIMEOUT_US) < 0) {
+            if (player->audio_port >= 0) {
+                sceAudioOutReleasePort(player->audio_port);
+                player->audio_port = -1;
+            }
+            eqvita_media_player_wait_or_delete_thread(player->thread_id,
+                                                      PREVIEW_THREAD_STOP_TIMEOUT_US);
+        }
         player->thread_id = -1;
     }
     if (player->audio_port >= 0) {
@@ -581,6 +689,8 @@ void eqvita_media_player_stop(eqvita_media_player_t *player)
         player->status.state != EQVITA_MEDIA_PLAYER_ERROR) {
         player->status.state = EQVITA_MEDIA_PLAYER_STOPPED;
     }
+    player->status.ring_fill = 0;
+    player->status.ring_capacity = 1;
     eqvita_media_player_unlock(player);
 }
 
@@ -653,6 +763,11 @@ int eqvita_media_player_open(eqvita_media_player_t *player, const char *path)
     player->status.sample_rate = decoder->sample_rate;
     player->status.channels = decoder->channels;
     player->status.last_error = 0;
+    player->status.underrun_count = 0;
+    player->status.ring_fill = 0;
+    player->status.ring_capacity = 1;
+    player->status.decode_max_us = 0;
+    player->status.output_max_us = 0;
     snprintf(player->status.path, sizeof(player->status.path), "%s", path);
     eqvita_media_player_unlock(player);
 
@@ -709,6 +824,26 @@ void eqvita_media_player_toggle_pause(eqvita_media_player_t *player)
     }
     eqvita_media_player_lock(player);
     player->pause_requested = !player->pause_requested;
+    player->status.state = player->pause_requested ? EQVITA_MEDIA_PLAYER_PAUSED : EQVITA_MEDIA_PLAYER_PLAYING;
+    eqvita_media_player_unlock(player);
+}
+
+void eqvita_media_player_set_paused(eqvita_media_player_t *player, int paused)
+{
+    eqvita_media_player_status_t state;
+
+    if (!player || !player->decoder) {
+        return;
+    }
+
+    state = eqvita_media_player_status(player);
+    if (state.state != EQVITA_MEDIA_PLAYER_PLAYING &&
+        state.state != EQVITA_MEDIA_PLAYER_PAUSED) {
+        return;
+    }
+
+    eqvita_media_player_lock(player);
+    player->pause_requested = paused ? 1 : 0;
     player->status.state = player->pause_requested ? EQVITA_MEDIA_PLAYER_PAUSED : EQVITA_MEDIA_PLAYER_PLAYING;
     eqvita_media_player_unlock(player);
 }

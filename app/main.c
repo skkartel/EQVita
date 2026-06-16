@@ -4,6 +4,7 @@
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/sysmem.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/kernel/threadmgr/lw_mutex.h>
 #include <psp2/system_param.h>
 #include <psp2/touch.h>
 #include <stdio.h>
@@ -30,6 +31,8 @@
 #define ROUTE_REFRESH_PREVIEW_INTERVAL_US 1000000u
 #define ANALOG_CENTER 128
 #define ANALOG_NAV_DEADZONE 60
+#define BROWSER_THREAD_PRIORITY 0x80
+#define BROWSER_THREAD_STACK (32 * 1024)
 
 #define SCE_AVCONFIG_VOLCTRL_ONBOARD 1
 #define SCE_AVCONFIG_VOLCTRL_BLUETOOTH 2
@@ -155,6 +158,20 @@ static eq_version_t g_version;
 static eqvita_media_player_t g_media_player;
 static eqvita_media_player_status_t g_media_status;
 static eqvita_media_listing_t g_media_listing;
+typedef struct media_browser_async
+{
+    SceUID thread_id;
+    SceKernelLwMutexWork mutex;
+    int mutex_ready;
+    volatile int cancel_requested;
+    volatile int completed;
+    int roots;
+    int result;
+    char path[EQVITA_MEDIA_MAX_PATH];
+    eqvita_media_listing_t listing;
+} media_browser_async_t;
+
+static media_browser_async_t g_browser_async;
 static int g_plugin_compatible = 0;
 static char g_message[96];
 static int g_message_frames = 0;
@@ -162,6 +179,10 @@ static uint32_t g_status_log_last_us = 0;
 static uint32_t g_diagnostic_drain_last_us = 0;
 static uint32_t g_route_refresh_last_us = 0;
 static uint32_t g_log_run_id = 0;
+static int g_apputil_ready = 0;
+static int g_apputil_init_result = 0;
+static int g_music_mounted = 0;
+static int g_music_mount_result = 0;
 static int g_boot_state_save_failed = 0;
 static int g_status_failure_count = 0;
 static int g_confirm_button = SCE_CTRL_CROSS;
@@ -237,11 +258,270 @@ static int elapsed_us(uint32_t now, uint32_t last, uint32_t interval)
     return last == 0 || (uint32_t)(now - last) >= interval;
 }
 
+static void init_app_util_resources(void)
+{
+    SceAppUtilInitParam init_param;
+    SceAppUtilBootParam boot_param;
+
+    memset(&init_param, 0, sizeof(init_param));
+    memset(&boot_param, 0, sizeof(boot_param));
+
+    g_apputil_init_result = sceAppUtilInit(&init_param, &boot_param);
+    if (g_apputil_init_result >= 0) {
+        g_apputil_ready = 1;
+        g_music_mount_result = sceAppUtilMusicMount();
+        g_music_mounted = g_music_mount_result >= 0;
+    } else {
+        g_music_mount_result = g_apputil_init_result;
+    }
+}
+
+static int is_ux0_music_path(const char *path)
+{
+    if (!path) {
+        return 0;
+    }
+    return strncmp(path, "ux0:music", 9) == 0 || strncmp(path, "ux0:/music", 10) == 0;
+}
+
+static void ensure_music_mounted(const char *reason)
+{
+    int res;
+
+    if (g_music_mounted || !g_apputil_ready) {
+        return;
+    }
+
+    res = sceAppUtilMusicMount();
+    g_music_mount_result = res;
+    if (res >= 0) {
+        g_music_mounted = 1;
+        app_log("apputil: music-mount retry reason=%s result=%d", reason ? reason : "", res);
+    } else {
+        app_log("apputil: music-mount retry-failed reason=%s result=%d", reason ? reason : "", res);
+    }
+}
+
+static void shutdown_app_util_resources(void)
+{
+    if (g_music_mounted) {
+        sceAppUtilMusicUmount();
+        g_music_mounted = 0;
+    }
+    if (g_apputil_ready) {
+        sceAppUtilShutdown();
+        g_apputil_ready = 0;
+    }
+}
+
+static void set_message(const char *fmt, ...);
+static void change_screen(app_screen_t screen);
+
 static int preview_is_busy(void)
 {
     return g_media_player.decoder &&
         (g_media_status.state == EQVITA_MEDIA_PLAYER_PLAYING ||
          g_media_status.state == EQVITA_MEDIA_PLAYER_PAUSED);
+}
+
+static void browser_async_lock(void)
+{
+    if (g_browser_async.mutex_ready) {
+        sceKernelLockLwMutex(&g_browser_async.mutex, 1, NULL);
+    }
+}
+
+static void browser_async_unlock(void)
+{
+    if (g_browser_async.mutex_ready) {
+        sceKernelUnlockLwMutex(&g_browser_async.mutex, 1);
+    }
+}
+
+static void browser_async_init(void)
+{
+    memset(&g_browser_async, 0, sizeof(g_browser_async));
+    g_browser_async.thread_id = -1;
+    if (sceKernelCreateLwMutex(&g_browser_async.mutex, "eqvita_browser", 0, 1, NULL) >= 0) {
+        g_browser_async.mutex_ready = 1;
+    }
+}
+
+static int browser_async_is_loading(void)
+{
+    int loading;
+
+    browser_async_lock();
+    loading = g_browser_async.thread_id >= 0 && !g_browser_async.completed;
+    browser_async_unlock();
+    return loading;
+}
+
+static int browser_async_thread(unsigned int args, void *argp)
+{
+    media_browser_async_t *job = NULL;
+    int result;
+
+    if (args == sizeof(job) && argp) {
+        memcpy(&job, argp, sizeof(job));
+    }
+    if (!job) {
+        sceKernelExitThread(-1);
+        return -1;
+    }
+
+    result = job->roots ? eqvita_media_browser_read_roots(&job->listing)
+                        : eqvita_media_browser_read_dir(&job->listing, job->path);
+
+    browser_async_lock();
+    job->result = result;
+    job->completed = 1;
+    browser_async_unlock();
+
+    sceKernelExitThread(0);
+    return 0;
+}
+
+static void browser_async_cancel(void)
+{
+    SceUID thread_id;
+
+    browser_async_lock();
+    g_browser_async.cancel_requested = 1;
+    thread_id = g_browser_async.thread_id;
+    browser_async_unlock();
+
+    if (thread_id >= 0) {
+        sceKernelWaitThreadEnd(thread_id, NULL, NULL);
+    }
+
+    browser_async_lock();
+    g_browser_async.thread_id = -1;
+    g_browser_async.completed = 0;
+    g_browser_async.cancel_requested = 0;
+    g_browser_async.result = 0;
+    browser_async_unlock();
+}
+
+static int browser_async_start(const char *path, int roots)
+{
+    media_browser_async_t *job = &g_browser_async;
+    SceUID thread_id;
+    int ret;
+
+    browser_async_cancel();
+
+    if (!roots && is_ux0_music_path(path) && !g_music_mounted) {
+        ensure_music_mounted("browser-open");
+    }
+
+    browser_async_lock();
+    g_browser_async.cancel_requested = 0;
+    g_browser_async.completed = 0;
+    g_browser_async.roots = roots ? 1 : 0;
+    g_browser_async.result = -1;
+    g_browser_async.path[0] = '\0';
+    if (path) {
+        snprintf(g_browser_async.path, sizeof(g_browser_async.path), "%s", path);
+    }
+    memset(&g_browser_async.listing, 0, sizeof(g_browser_async.listing));
+    browser_async_unlock();
+
+    g_selected[SCREEN_MUSIC_BROWSER] = 0;
+    g_scroll_top[SCREEN_MUSIC_BROWSER] = 0;
+    change_screen(SCREEN_MUSIC_BROWSER);
+    set_message(roots ? "Loading storage..." : "Loading folder...");
+
+    thread_id = sceKernelCreateThread("eqvita_browser",
+                                      browser_async_thread,
+                                      BROWSER_THREAD_PRIORITY,
+                                      BROWSER_THREAD_STACK,
+                                      0,
+                                      0,
+                                      NULL);
+    if (thread_id < 0) {
+        set_message("Could not start browser (%d)", thread_id);
+        return thread_id;
+    }
+
+    browser_async_lock();
+    g_browser_async.thread_id = thread_id;
+    browser_async_unlock();
+
+    ret = sceKernelStartThread(thread_id, sizeof(job), &job);
+    if (ret < 0) {
+        sceKernelDeleteThread(thread_id);
+        browser_async_lock();
+        g_browser_async.thread_id = -1;
+        browser_async_unlock();
+        set_message("Could not start browser (%d)", ret);
+        return ret;
+    }
+
+    return 0;
+}
+
+static void browser_async_poll(void)
+{
+    char path[EQVITA_MEDIA_MAX_PATH];
+    SceUID thread_id;
+    int completed;
+    int cancelled;
+    int roots;
+    int result;
+
+    browser_async_lock();
+    completed = g_browser_async.completed;
+    if (!completed) {
+        browser_async_unlock();
+        return;
+    }
+    thread_id = g_browser_async.thread_id;
+    cancelled = g_browser_async.cancel_requested;
+    roots = g_browser_async.roots;
+    result = g_browser_async.result;
+    if (!cancelled && result >= 0) {
+        g_media_listing = g_browser_async.listing;
+    }
+    snprintf(path, sizeof(path), "%s", g_browser_async.path);
+    g_browser_async.thread_id = -1;
+    g_browser_async.completed = 0;
+    browser_async_unlock();
+
+    if (thread_id >= 0) {
+        sceKernelWaitThreadEnd(thread_id, NULL, NULL);
+    }
+
+    if (cancelled) {
+        return;
+    }
+
+    if (result < 0) {
+        set_message("Could not open folder (%d)", result);
+        app_log("browser: open-failed path=%s error=%d", path, result);
+        if (!g_media_listing.path[0]) {
+            change_screen(SCREEN_MUSIC);
+        }
+        return;
+    }
+
+    g_selected[SCREEN_MUSIC_BROWSER] = 0;
+    g_scroll_top[SCREEN_MUSIC_BROWSER] = 0;
+    if (result == 0) {
+        set_message(roots ? "No storage found" : "No music files here");
+        if (roots) {
+            app_log("browser: no-storage result=%d", result);
+        }
+    }
+}
+
+static void browser_async_shutdown(void)
+{
+    browser_async_cancel();
+    if (g_browser_async.mutex_ready) {
+        sceKernelDeleteLwMutex(&g_browser_async.mutex);
+        g_browser_async.mutex_ready = 0;
+    }
 }
 
 static uint32_t analog_navigation_buttons(const SceCtrlData *pad)
@@ -999,35 +1279,19 @@ static void load_preset_with_message(void)
 
 static void open_music_browser_roots(void)
 {
-    int res = eqvita_media_browser_read_roots(&g_media_listing);
-    if (res <= 0) {
-        set_message("No storage found");
-        app_log("browser: no-storage result=%d", res);
-    }
-    g_selected[SCREEN_MUSIC_BROWSER] = 0;
-    g_scroll_top[SCREEN_MUSIC_BROWSER] = 0;
-    change_screen(SCREEN_MUSIC_BROWSER);
+    browser_async_start(NULL, 1);
 }
 
 static void open_music_browser_path(const char *path)
 {
-    int res = eqvita_media_browser_read_dir(&g_media_listing, path);
-    if (res < 0) {
-        set_message("Could not open folder (%d)", res);
-        app_log("browser: open-failed path=%s error=%d", path ? path : "", res);
-        return;
-    }
-    if (g_media_listing.count == 0) {
-        set_message("No music files here");
-    }
-    g_selected[SCREEN_MUSIC_BROWSER] = 0;
-    g_scroll_top[SCREEN_MUSIC_BROWSER] = 0;
-    change_screen(SCREEN_MUSIC_BROWSER);
+    browser_async_start(path, 0);
 }
 
 static void leave_music_browser(void)
 {
     char parent[EQVITA_MEDIA_MAX_PATH];
+
+    browser_async_cancel();
 
     if (g_media_listing.path[0] &&
         eqvita_media_browser_parent_path(parent, sizeof(parent), g_media_listing.path) == 0) {
@@ -1069,6 +1333,9 @@ static void media_player_poll_log(void)
 {
     static eqvita_media_player_state_t last_state = EQVITA_MEDIA_PLAYER_STOPPED;
     static int last_error = 0;
+    static uint32_t last_underruns = 0;
+    static uint32_t last_decode_max_us = 0;
+    static uint32_t last_output_max_us = 0;
     eqvita_media_player_status_t next = eqvita_media_player_status(&g_media_player);
 
     if ((next.state == EQVITA_MEDIA_PLAYER_FINISHED ||
@@ -1084,6 +1351,19 @@ static void media_player_poll_log(void)
                 eqvita_media_browser_file_name(next.path));
         last_state = next.state;
         last_error = next.last_error;
+    }
+    if (next.underrun_count != last_underruns ||
+        next.decode_max_us != last_decode_max_us ||
+        next.output_max_us != last_output_max_us) {
+        app_log("preview-buffer: underruns=%u fill=%u/%u decode_max_us=%u output_max_us=%u",
+                next.underrun_count,
+                next.ring_fill,
+                next.ring_capacity,
+                next.decode_max_us,
+                next.output_max_us);
+        last_underruns = next.underrun_count;
+        last_decode_max_us = next.decode_max_us;
+        last_output_max_us = next.output_max_us;
     }
     g_media_status = next;
 }
@@ -1295,7 +1575,9 @@ static const char *screen_subtitle(app_screen_t screen)
         case SCREEN_SIMPLE: return "Adjust bass, mids, treble";
         case SCREEN_ADVANCED: return "Preamp and 10 bands";
         case SCREEN_MUSIC: return "Play a song while tuning EQ";
-        case SCREEN_MUSIC_BROWSER: return g_media_listing.path[0] ? g_media_listing.path : "Choose a folder";
+        case SCREEN_MUSIC_BROWSER:
+            return browser_async_is_loading() ? "Loading folder..." :
+                g_media_listing.path[0] ? g_media_listing.path : "Choose a folder";
         case SCREEN_THEMES: return "Choose the app color style";
         case SCREEN_SETTINGS: return "Choose where EQ applies";
         case SCREEN_ABOUT: return "Controls, version, and help";
@@ -1328,7 +1610,7 @@ static int current_row_count(void)
         case SCREEN_SIMPLE: return SIMPLE_ROW_COUNT;
         case SCREEN_ADVANCED: return ADVANCED_ROW_COUNT;
         case SCREEN_MUSIC: return MUSIC_ROW_COUNT;
-        case SCREEN_MUSIC_BROWSER: return g_media_listing.count;
+        case SCREEN_MUSIC_BROWSER: return browser_async_is_loading() ? 1 : g_media_listing.count;
         case SCREEN_THEMES: return eq_ui_theme_count();
         case SCREEN_SETTINGS: return SETTINGS_ROW_COUNT;
         case SCREEN_ABOUT: return ABOUT_ROW_COUNT;
@@ -1361,6 +1643,9 @@ static int row_is_section(app_screen_t screen, int row)
 
 static int row_is_selectable(app_screen_t screen, int row)
 {
+    if (screen == SCREEN_MUSIC_BROWSER && browser_async_is_loading()) {
+        return 0;
+    }
     return !row_is_section(screen, row);
 }
 
@@ -1506,7 +1791,9 @@ static void row_value(char *value, size_t value_size, app_screen_t screen, int r
             }
             break;
         case SCREEN_MUSIC_BROWSER:
-            if (row >= 0 && row < g_media_listing.count) {
+            if (browser_async_is_loading()) {
+                snprintf(value, value_size, "%s", "");
+            } else if (row >= 0 && row < g_media_listing.count) {
                 eqvita_media_entry_t *entry = &g_media_listing.entries[row];
                 snprintf(value, value_size, "%s",
                          entry->kind == EQVITA_MEDIA_ENTRY_FILE ? "Play" :
@@ -1775,7 +2062,11 @@ static void row_text(app_screen_t screen,
             }
             break;
         case SCREEN_MUSIC_BROWSER:
-            if (row >= 0 && row < g_media_listing.count) {
+            if (browser_async_is_loading()) {
+                *icon = "folder";
+                *label = "Loading...";
+                *desc = "Reading folder contents";
+            } else if (row >= 0 && row < g_media_listing.count) {
                 eqvita_media_entry_t *entry = &g_media_listing.entries[row];
                 *icon = entry->kind == EQVITA_MEDIA_ENTRY_FILE ? "file" : "folder";
                 *label = entry->name;
@@ -2238,6 +2529,10 @@ static void activate_current(void)
             }
             break;
         case SCREEN_MUSIC_BROWSER:
+            if (browser_async_is_loading()) {
+                set_message("Folder is still loading");
+                break;
+            }
             if (row >= 0 && row < g_media_listing.count) {
                 eqvita_media_entry_t *entry = &g_media_listing.entries[row];
                 char next_path[EQVITA_MEDIA_MAX_PATH];
@@ -2413,12 +2708,19 @@ int main(void)
     int last_buttons = 0;
     eqvita_startup_source_t startup_source = EQVITA_STARTUP_SOURCE_DEFAULT;
 
+    g_log_run_id = sceKernelGetProcessTimeLow();
+    app_log("---- run begin run_id=%08x ----", g_log_run_id);
+
     eqvita_app_state_init(&g_app_state);
     eqvita_media_player_init(&g_media_player);
     g_media_status = eqvita_media_player_status(&g_media_player);
+    browser_async_init();
+    init_app_util_resources();
     init_button_mapping();
     eq_ui_set_theme(load_theme_index());
     if (eq_ui_init() < 0) {
+        browser_async_shutdown();
+        shutdown_app_util_resources();
         return sceKernelExitProcess(1);
     }
 
@@ -2454,8 +2756,6 @@ int main(void)
         g_status.route = EQ_ROUTE_UNKNOWN;
         g_status.bypass_reason = EQ_BYPASS_DISABLED;
     }
-    g_log_run_id = sceKernelGetProcessTimeLow();
-    app_log("---- run begin run_id=%08x ----", g_log_run_id);
     app_log("start: run_id=%08x version=%d.%d.%d compatible=%d source=%s slot=%d route=%s",
         g_log_run_id,
         g_version.major, g_version.minor, g_version.patch,
@@ -2463,6 +2763,10 @@ int main(void)
         startup_source_str(g_plugin_compatible ? startup_source : EQVITA_STARTUP_SOURCE_DEFAULT),
         g_preset_slot + 1,
         route_str(g_control.route_hint));
+    app_log("apputil: init=%d music_mount=%d mounted=%d",
+        g_apputil_init_result,
+        g_music_mount_result,
+        g_music_mounted);
     if (sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG) < 0) {
         app_log("input: analog sampling unavailable");
     }
@@ -2474,6 +2778,7 @@ int main(void)
         int active_input;
         int buttons;
 
+        browser_async_poll();
         if (sceCtrlPeekBufferPositive(0, &pad, 1) < 0) {
             render_frame();
             sceKernelDelayThread(1000);
@@ -2541,6 +2846,7 @@ int main(void)
         }
 
         handle_touch();
+        browser_async_poll();
         refresh_route_hint();
         media_player_poll_log();
         render_frame();
@@ -2549,8 +2855,10 @@ int main(void)
         sceKernelDelayThread(1000);
     }
 
+    browser_async_shutdown();
     eqvita_media_player_shutdown(&g_media_player);
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_STOP);
     eq_ui_fini();
+    shutdown_app_util_resources();
     return sceKernelExitProcess(0);
 }

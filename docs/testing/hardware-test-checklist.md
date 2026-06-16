@@ -45,6 +45,7 @@ For devs: host tests do not prove kernel audio timing, so real hardware still ge
 - Adjust Simple EQ and Advanced EQ while the preview is playing.
 - Exit EQVita while preview audio is playing and confirm audio stops cleanly.
 - Reopen EQVita and check `ur0:data/eqvita/app.log` for any `preview: open-failed` or `preview: state=Error` lines.
+- If the screen says `Playing` but you hear nothing, check the latest `preview-buffer` line. `output_max_us` should be above `0` once audio reaches the Vita output call.
 
 ## Output Modes
 

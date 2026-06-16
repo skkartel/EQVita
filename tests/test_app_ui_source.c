@@ -379,7 +379,7 @@ static void test_music_browser_copies_selected_path_before_opening(void)
     snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
     source = read_file(path);
 
-    ASSERT_TRUE(strstr(source, "eqvita_media_browser_read_roots(&g_media_listing)") != NULL);
+    ASSERT_TRUE(strstr(source, "browser_async_start(NULL, 1)") != NULL);
 
     browser_case = strstr(source, "static void activate_current(void)");
     ASSERT_TRUE(browser_case != NULL);
@@ -424,21 +424,40 @@ static void test_music_browser_cancel_goes_to_parent_before_player(void)
     free(source);
 }
 
-static void test_media_browser_builds_listing_before_swapping(void)
+static void test_media_browser_uses_heap_staging_for_large_listings(void)
 {
     char path[512];
     char *source;
+    char *main_source;
+    char *worker;
+    char *worker_end;
 
     snprintf(path, sizeof(path), "%s/app/media_browser.c", EQVITA_SOURCE_DIR);
     source = read_file(path);
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    main_source = read_file(path);
 
     ASSERT_TRUE(strstr(source, "int eqvita_media_browser_read_roots") != NULL);
     ASSERT_TRUE(strstr(source, "sceIoGetstat") != NULL);
-    ASSERT_TRUE(strstr(source, "eqvita_media_listing_t next") != NULL);
+    ASSERT_TRUE(strstr(source, "eqvita_media_listing_t *next") != NULL);
+    ASSERT_TRUE(strstr(source, "malloc(sizeof(*next))") != NULL);
+    ASSERT_TRUE(strstr(source, "free(next)") != NULL);
+    ASSERT_TRUE(!strstr(source, "eqvita_media_listing_t next;"));
     ASSERT_TRUE(strstr(source, "fd = sceIoDopen(open_path)") != NULL);
-    ASSERT_TRUE(strstr(source, "*listing = next") != NULL);
+    ASSERT_TRUE(strstr(source, "*listing = *next") != NULL);
+    ASSERT_TRUE(strstr(source, "BROWSER_READ_YIELD_ENTRIES") != NULL);
+    ASSERT_TRUE(strstr(source, "sceKernelDelayThread(500)") != NULL);
+
+    worker = strstr(main_source, "static int browser_async_thread");
+    ASSERT_TRUE(worker != NULL);
+    worker_end = strstr(worker + 1, "static void ");
+    ASSERT_TRUE(worker_end != NULL);
+    ASSERT_TRUE(!range_contains(worker, worker_end, "eqvita_media_listing_t listing;"));
+    ASSERT_TRUE(range_contains(worker, worker_end, "eqvita_media_browser_read_roots(&job->listing)"));
+    ASSERT_TRUE(range_contains(worker, worker_end, "eqvita_media_browser_read_dir(&job->listing"));
 
     free(source);
+    free(main_source);
 }
 
 static void test_music_preview_reduces_main_loop_polling_pressure(void)
@@ -460,6 +479,7 @@ static void test_music_preview_reduces_main_loop_polling_pressure(void)
     ASSERT_TRUE(strstr(source, "STATUS_LOG_PREVIEW_INTERVAL_US") != NULL);
     ASSERT_TRUE(strstr(source, "DIAGNOSTIC_DRAIN_INTERVAL_US") != NULL);
     ASSERT_TRUE(strstr(source, "DIAGNOSTIC_DRAIN_PREVIEW_INTERVAL_US") != NULL);
+    ASSERT_TRUE(strstr(source, "preview-buffer: underruns=%u fill=%u/%u decode_max_us=%u output_max_us=%u") != NULL);
 
     status_fn = strstr(source, "static void maybe_log_status(void)");
     ASSERT_TRUE(status_fn != NULL);
@@ -480,6 +500,81 @@ static void test_music_preview_reduces_main_loop_polling_pressure(void)
     loop_end = strstr(loop, "eqvita_media_player_shutdown(&g_media_player)");
     ASSERT_TRUE(loop_end != NULL);
     ASSERT_TRUE(range_contains(loop, loop_end, "sceKernelDelayThread(1000)"));
+
+    free(source);
+}
+
+static void test_music_preview_mounts_vita_music_library(void)
+{
+    char path[512];
+    char *source;
+    char *main_fn;
+    char *shutdown_fn;
+
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    source = read_file(path);
+
+    ASSERT_TRUE(strstr(source, "static void init_app_util_resources(void)") != NULL);
+    ASSERT_TRUE(strstr(source, "sceAppUtilInit") != NULL);
+    ASSERT_TRUE(strstr(source, "sceAppUtilMusicMount") != NULL);
+    ASSERT_TRUE(strstr(source, "static void ensure_music_mounted") != NULL);
+    ASSERT_TRUE(strstr(source, "is_ux0_music_path") != NULL);
+    ASSERT_TRUE(strstr(source, "apputil: init=%d music_mount=%d mounted=%d") != NULL);
+
+    main_fn = strstr(source, "int main(void)");
+    ASSERT_TRUE(main_fn != NULL);
+    ASSERT_TRUE(range_contains(main_fn, strstr(main_fn, "while (1) {"), "init_app_util_resources()"));
+    ASSERT_TRUE(range_contains(main_fn, strstr(main_fn, "while (1) {"), "init_button_mapping()"));
+
+    shutdown_fn = strstr(source, "static void shutdown_app_util_resources(void)");
+    ASSERT_TRUE(shutdown_fn != NULL);
+    ASSERT_TRUE(range_contains(shutdown_fn, strstr(shutdown_fn + 1, "static "), "sceAppUtilMusicUmount()"));
+    ASSERT_TRUE(range_contains(shutdown_fn, strstr(shutdown_fn + 1, "static "), "sceAppUtilShutdown()"));
+    ASSERT_TRUE(strstr(source, "shutdown_app_util_resources()") != NULL);
+
+    free(source);
+}
+
+static void test_music_browser_loads_async_without_auto_pausing_preview(void)
+{
+    char path[512];
+    char *source;
+    char *open_roots;
+    char *open_roots_end;
+    char *open_path;
+    char *open_path_end;
+    char *loop;
+    char *loop_end;
+
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    source = read_file(path);
+
+    ASSERT_TRUE(strstr(source, "g_media_browser_auto_paused") == NULL);
+    ASSERT_TRUE(strstr(source, "pause_preview_for_browser") == NULL);
+    ASSERT_TRUE(strstr(source, "resume_preview_after_browser") == NULL);
+    ASSERT_TRUE(strstr(source, "browser_async_start") != NULL);
+    ASSERT_TRUE(strstr(source, "browser_async_poll") != NULL);
+    ASSERT_TRUE(strstr(source, "browser_async_cancel") != NULL);
+
+    open_roots = strstr(source, "static void open_music_browser_roots(void)\n{");
+    ASSERT_TRUE(open_roots != NULL);
+    open_roots_end = strstr(open_roots + 1, "static void ");
+    ASSERT_TRUE(open_roots_end != NULL);
+    ASSERT_TRUE(range_contains(open_roots, open_roots_end, "browser_async_start(NULL, 1)"));
+    ASSERT_TRUE(!range_contains(open_roots, open_roots_end, "eqvita_media_browser_read_roots(&g_media_listing)"));
+
+    open_path = strstr(source, "static void open_music_browser_path(const char *path)\n{");
+    ASSERT_TRUE(open_path != NULL);
+    open_path_end = strstr(open_path + 1, "static void ");
+    ASSERT_TRUE(open_path_end != NULL);
+    ASSERT_TRUE(range_contains(open_path, open_path_end, "browser_async_start(path, 0)"));
+    ASSERT_TRUE(!range_contains(open_path, open_path_end, "eqvita_media_browser_read_dir(&g_media_listing"));
+
+    loop = strstr(source, "while (1) {");
+    ASSERT_TRUE(loop != NULL);
+    loop_end = strstr(loop, "eqvita_media_player_shutdown(&g_media_player)");
+    ASSERT_TRUE(loop_end != NULL);
+    ASSERT_TRUE(range_contains(loop, loop_end, "browser_async_poll()"));
 
     free(source);
 }
@@ -529,8 +624,10 @@ int main(void)
     test_music_preview_keeps_actions_not_metadata_rows();
     test_music_browser_copies_selected_path_before_opening();
     test_music_browser_cancel_goes_to_parent_before_player();
-    test_media_browser_builds_listing_before_swapping();
+    test_media_browser_uses_heap_staging_for_large_listings();
     test_music_preview_reduces_main_loop_polling_pressure();
+    test_music_preview_mounts_vita_music_library();
+    test_music_browser_loads_async_without_auto_pausing_preview();
     test_left_stick_navigation_uses_button_flow();
     return 0;
 }

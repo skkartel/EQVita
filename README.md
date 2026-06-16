@@ -189,6 +189,13 @@ Try another file first. For WAV, use normal 16-bit PCM. If it still fails, open 
 </details>
 
 <details>
+<summary><strong>Music Preview says Playing but I hear nothing.</strong></summary>
+
+Stop the preview, try the file again, then open EQVita once more before sharing the log. The useful line is `preview-buffer`; if `output_max_us` stays at `0`, mention that in the issue.
+
+</details>
+
+<details>
 <summary><strong>I hear crackle, static, or distortion.</strong></summary>
 
 Try a safer preset or lower preamp first. If it still happens, save `ur0:data/eqvita/app.log` and describe what was playing.
