@@ -12,6 +12,8 @@ set(VITA_VERSION "01.13")
 add_executable("${A_NAME}"
   main.c
   app_state.c
+  media_browser.c
+  media_player.c
   persistence.c
   ui_vita.c
 )
@@ -38,6 +40,8 @@ target_link_libraries("${A_NAME}"
   EQSpeaker_stub
   vita2d
   SceAVConfig_stub
+  SceAudio_stub
+  SceAudiodec_stub
   SceAppUtil_stub
   SceCtrl_stub
   SceTouch_stub
@@ -51,6 +55,10 @@ target_link_libraries("${A_NAME}"
   SceLibKernel_stub
   SceIofilemgr_stub
   freetype
+  vorbisfile
+  vorbis
+  ogg
+  mpg123
   png
   jpeg
   z

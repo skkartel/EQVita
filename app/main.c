@@ -3,6 +3,7 @@
 #include <psp2/apputil.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/sysmem.h>
+#include <psp2/kernel/threadmgr.h>
 #include <psp2/system_param.h>
 #include <psp2/touch.h>
 #include <stdio.h>
@@ -10,6 +11,8 @@
 #include <string.h>
 
 #include "app_state.h"
+#include "media_browser.h"
+#include "media_player.h"
 #include "persistence.h"
 #include "ui_vita.h"
 #include "../common/eq_shared.h"
@@ -18,7 +21,15 @@
 #define STEP_COARSE 1000
 #define PRESET_SYNC_FAILED -4
 #define APP_LOG_PATH EQVITA_DATA_DIR "/" EQVITA_APP_LOG_NAME
-#define STATUS_LOG_INTERVAL_FRAMES 300
+#define STATUS_LOG_INTERVAL_US 5000000u
+#define STATUS_LOG_PREVIEW_INTERVAL_US 12000000u
+#define DIAGNOSTIC_DRAIN_INTERVAL_US 1000000u
+#define DIAGNOSTIC_DRAIN_PREVIEW_INTERVAL_US 5000000u
+#define DIAGNOSTIC_DRAIN_PREVIEW_EVENTS 4u
+#define ROUTE_REFRESH_INTERVAL_US 250000u
+#define ROUTE_REFRESH_PREVIEW_INTERVAL_US 1000000u
+#define ANALOG_CENTER 128
+#define ANALOG_NAV_DEADZONE 60
 
 #define SCE_AVCONFIG_VOLCTRL_ONBOARD 1
 #define SCE_AVCONFIG_VOLCTRL_BLUETOOTH 2
@@ -37,6 +48,8 @@ typedef enum app_screen
     SCREEN_PRESETS,
     SCREEN_SIMPLE,
     SCREEN_ADVANCED,
+    SCREEN_MUSIC,
+    SCREEN_MUSIC_BROWSER,
     SCREEN_THEMES,
     SCREEN_SETTINGS,
     SCREEN_ABOUT,
@@ -104,6 +117,13 @@ static const char *band_labels[EQ_BANDS] = {
 #define SETTINGS_ROW_STARTUP 6
 #define SETTINGS_ROW_COUNT 7
 
+#define MUSIC_ROW_CHOOSE 0
+#define MUSIC_ROW_PLAY_PAUSE 1
+#define MUSIC_ROW_STOP 2
+#define MUSIC_ROW_LOOP 3
+#define MUSIC_ROW_VOLUME 4
+#define MUSIC_ROW_COUNT 5
+
 #define ABOUT_ROW_CREATOR 0
 #define ABOUT_ROW_REPOSITORY 1
 #define ABOUT_ROW_LOG_FILE 2
@@ -132,10 +152,15 @@ static eqvita_app_state_t g_app_state;
 
 static eq_status_t g_status;
 static eq_version_t g_version;
+static eqvita_media_player_t g_media_player;
+static eqvita_media_player_status_t g_media_status;
+static eqvita_media_listing_t g_media_listing;
 static int g_plugin_compatible = 0;
 static char g_message[96];
 static int g_message_frames = 0;
-static uint32_t g_status_log_frames = 0;
+static uint32_t g_status_log_last_us = 0;
+static uint32_t g_diagnostic_drain_last_us = 0;
+static uint32_t g_route_refresh_last_us = 0;
 static uint32_t g_log_run_id = 0;
 static int g_boot_state_save_failed = 0;
 static int g_status_failure_count = 0;
@@ -205,6 +230,45 @@ static void app_log(const char *fmt, ...)
     }
     line[len] = '\0';
     eqvita_append_log_line(EQVITA_DATA_DIR, line);
+}
+
+static int elapsed_us(uint32_t now, uint32_t last, uint32_t interval)
+{
+    return last == 0 || (uint32_t)(now - last) >= interval;
+}
+
+static int preview_is_busy(void)
+{
+    return g_media_player.decoder &&
+        (g_media_status.state == EQVITA_MEDIA_PLAYER_PLAYING ||
+         g_media_status.state == EQVITA_MEDIA_PLAYER_PAUSED);
+}
+
+static uint32_t analog_navigation_buttons(const SceCtrlData *pad)
+{
+    int lx;
+    int ly;
+    uint32_t buttons = 0;
+
+    if (!pad) {
+        return 0;
+    }
+
+    lx = (int)pad->lx - ANALOG_CENTER;
+    ly = (int)pad->ly - ANALOG_CENTER;
+
+    if (ly <= -ANALOG_NAV_DEADZONE) {
+        buttons |= SCE_CTRL_UP;
+    } else if (ly >= ANALOG_NAV_DEADZONE) {
+        buttons |= SCE_CTRL_DOWN;
+    }
+    if (lx <= -ANALOG_NAV_DEADZONE) {
+        buttons |= SCE_CTRL_LEFT;
+    } else if (lx >= ANALOG_NAV_DEADZONE) {
+        buttons |= SCE_CTRL_RIGHT;
+    }
+
+    return buttons;
 }
 
 static const char *startup_source_str(eqvita_startup_source_t source)
@@ -310,6 +374,8 @@ static void init_button_mapping(void)
 static int save_preset(void);
 static int save_boot_state(void);
 static void change_screen(app_screen_t screen);
+static void open_music_browser_roots(void);
+static void open_music_browser_path(const char *path);
 
 static void set_message(const char *fmt, ...)
 {
@@ -400,33 +466,41 @@ static void maybe_log_status(void)
     static uint32_t last_max_total_us = 0xffffffffu;
     static uint32_t last_max_dsp_us = 0xffffffffu;
     static int32_t last_min_margin_us = INT32_MAX;
+    uint32_t now;
+    uint32_t interval;
+    int preview_busy;
     int changed;
+    int changed_core;
+    int changed_detail;
     int force_log;
 
     if (!g_plugin_compatible) {
         return;
     }
 
-    g_status_log_frames++;
-    force_log = (g_status_log_frames >= STATUS_LOG_INTERVAL_FRAMES);
-    changed = (g_status.route != last_route ||
+    now = sceKernelGetProcessTimeLow();
+    preview_busy = preview_is_busy();
+    interval = preview_busy ? STATUS_LOG_PREVIEW_INTERVAL_US : STATUS_LOG_INTERVAL_US;
+    force_log = elapsed_us(now, g_status_log_last_us, interval);
+    changed_core = (g_status.route != last_route ||
         g_status.bypass_reason != last_reason ||
         g_status.eq_active != last_active ||
-        g_status.clip_events != last_clips ||
         g_status.debug_busy_bypass_count != last_busy_bypass ||
-        g_status.debug_unknown_port_count != last_unknown_port ||
+        g_status.debug_unknown_port_count != last_unknown_port);
+    changed_detail = (g_status.clip_events != last_clips ||
         g_status.debug_max_us != last_max_us ||
         g_status.debug_max_total_us != last_max_total_us ||
         g_status.debug_max_dsp_us != last_max_dsp_us ||
         g_status.debug_min_margin_us != last_min_margin_us);
+    changed = changed_core || (!preview_busy && changed_detail);
 
-    if (g_status_log_frames < STATUS_LOG_INTERVAL_FRAMES && !changed) {
+    if (!force_log && !changed) {
         return;
     }
 
     if (force_log || changed) {
         uint32_t budget_us = audio_budget_us(g_status.debug_len, g_status.sample_rate);
-        g_status_log_frames = 0;
+        g_status_log_last_us = now;
         app_log("status: run=%08x route=%s active=%u reason=%s sr=%u port=%u len=%u ch=%u runs=%u ports=%u busy=%u unknown=%u last_us=%u max_us=%u clips=%d peak_l=%u peak_r=%u",
             g_log_run_id,
             route_str(g_status.route),
@@ -522,10 +596,22 @@ static void maybe_log_status(void)
 static void maybe_log_diagnostics(void)
 {
     eq_diag_snapshot_t snapshot;
+    uint32_t now;
+    uint32_t interval;
+    uint32_t events_to_log;
+    int preview_busy;
 
     if (!g_plugin_compatible) {
         return;
     }
+
+    now = sceKernelGetProcessTimeLow();
+    preview_busy = preview_is_busy();
+    interval = preview_busy ? DIAGNOSTIC_DRAIN_PREVIEW_INTERVAL_US : DIAGNOSTIC_DRAIN_INTERVAL_US;
+    if (!elapsed_us(now, g_diagnostic_drain_last_us, interval)) {
+        return;
+    }
+    g_diagnostic_drain_last_us = now;
 
     memset(&snapshot, 0, sizeof(snapshot));
     if (EqDrainDiagnostics(&snapshot) < 0) {
@@ -551,7 +637,16 @@ static void maybe_log_diagnostics(void)
         snapshot.count = EQ_DIAG_MAX_EVENTS_PER_DRAIN;
     }
 
-    for (uint32_t i = 0; i < snapshot.count; ++i) {
+    events_to_log = snapshot.count;
+    if (preview_busy && events_to_log > DIAGNOSTIC_DRAIN_PREVIEW_EVENTS) {
+        events_to_log = DIAGNOSTIC_DRAIN_PREVIEW_EVENTS;
+        app_log("diag: run=%08x evt=preview-limited count=%u logged=%u",
+            g_log_run_id,
+            snapshot.count,
+            events_to_log);
+    }
+
+    for (uint32_t i = 0; i < events_to_log; ++i) {
         const eq_diag_event_t *event = &snapshot.events[i];
         if (event->version != EQ_DIAG_EVENT_VERSION) {
             app_log("diag: run=%08x evt=invalid seq=%u version=%u",
@@ -666,10 +761,19 @@ static int apply_control_candidate(const eq_control_t *candidate, int mark_boot_
 
 static void refresh_route_hint(void)
 {
+    uint32_t now;
+    uint32_t interval;
     uint8_t route;
     if (!g_plugin_compatible) {
         return;
     }
+
+    now = sceKernelGetProcessTimeLow();
+    interval = preview_is_busy() ? ROUTE_REFRESH_PREVIEW_INTERVAL_US : ROUTE_REFRESH_INTERVAL_US;
+    if (!elapsed_us(now, g_route_refresh_last_us, interval)) {
+        return;
+    }
+    g_route_refresh_last_us = now;
 
     route = (uint8_t)detect_route_user();
     if (g_control.route_hint != route) {
@@ -893,6 +997,97 @@ static void load_preset_with_message(void)
     }
 }
 
+static void open_music_browser_roots(void)
+{
+    int res = eqvita_media_browser_read_roots(&g_media_listing);
+    if (res <= 0) {
+        set_message("No storage found");
+        app_log("browser: no-storage result=%d", res);
+    }
+    g_selected[SCREEN_MUSIC_BROWSER] = 0;
+    g_scroll_top[SCREEN_MUSIC_BROWSER] = 0;
+    change_screen(SCREEN_MUSIC_BROWSER);
+}
+
+static void open_music_browser_path(const char *path)
+{
+    int res = eqvita_media_browser_read_dir(&g_media_listing, path);
+    if (res < 0) {
+        set_message("Could not open folder (%d)", res);
+        app_log("browser: open-failed path=%s error=%d", path ? path : "", res);
+        return;
+    }
+    if (g_media_listing.count == 0) {
+        set_message("No music files here");
+    }
+    g_selected[SCREEN_MUSIC_BROWSER] = 0;
+    g_scroll_top[SCREEN_MUSIC_BROWSER] = 0;
+    change_screen(SCREEN_MUSIC_BROWSER);
+}
+
+static void leave_music_browser(void)
+{
+    char parent[EQVITA_MEDIA_MAX_PATH];
+
+    if (g_media_listing.path[0] &&
+        eqvita_media_browser_parent_path(parent, sizeof(parent), g_media_listing.path) == 0) {
+        open_music_browser_path(parent);
+        return;
+    }
+    if (eqvita_media_browser_is_root_path(g_media_listing.path)) {
+        open_music_browser_roots();
+        return;
+    }
+
+    change_screen(SCREEN_MUSIC);
+}
+
+static void media_player_play_selected(const char *path)
+{
+    int res;
+
+    if (!path || !*path) {
+        set_message("Choose a music file first");
+        return;
+    }
+    res = eqvita_media_player_open(&g_media_player, path);
+    g_media_status = eqvita_media_player_status(&g_media_player);
+    if (res < 0) {
+        set_message("Could not play this file");
+        app_log("preview: open-failed error=%d", g_media_status.last_error);
+        return;
+    }
+    set_message("Playing preview");
+    app_log("preview: play format=%s rate=%u ch=%u file=%s",
+            eqvita_media_player_format_label(g_media_status.format),
+            g_media_status.sample_rate,
+            g_media_status.channels,
+            eqvita_media_browser_file_name(g_media_status.path));
+}
+
+static void media_player_poll_log(void)
+{
+    static eqvita_media_player_state_t last_state = EQVITA_MEDIA_PLAYER_STOPPED;
+    static int last_error = 0;
+    eqvita_media_player_status_t next = eqvita_media_player_status(&g_media_player);
+
+    if ((next.state == EQVITA_MEDIA_PLAYER_FINISHED ||
+         next.state == EQVITA_MEDIA_PLAYER_ERROR) && g_media_player.decoder) {
+        eqvita_media_player_stop(&g_media_player);
+        next = eqvita_media_player_status(&g_media_player);
+    }
+
+    if (next.state != last_state || next.last_error != last_error) {
+        app_log("preview: state=%s error=%d file=%s",
+                eqvita_media_player_state_label(next.state),
+                next.last_error,
+                eqvita_media_browser_file_name(next.path));
+        last_state = next.state;
+        last_error = next.last_error;
+    }
+    g_media_status = next;
+}
+
 static void restore_eq_entry(void)
 {
     if (!g_eq_entry_valid) {
@@ -1082,6 +1277,8 @@ static const char *screen_title(app_screen_t screen)
         case SCREEN_PRESETS: return "Presets";
         case SCREEN_SIMPLE: return "Simple EQ";
         case SCREEN_ADVANCED: return "Advanced EQ";
+        case SCREEN_MUSIC: return "Music Preview";
+        case SCREEN_MUSIC_BROWSER: return "Choose Music";
         case SCREEN_THEMES: return "Themes";
         case SCREEN_SETTINGS: return "Settings";
         case SCREEN_ABOUT: return "Help";
@@ -1097,6 +1294,8 @@ static const char *screen_subtitle(app_screen_t screen)
         case SCREEN_PRESETS: return "Choose or save sound profiles";
         case SCREEN_SIMPLE: return "Adjust bass, mids, treble";
         case SCREEN_ADVANCED: return "Preamp and 10 bands";
+        case SCREEN_MUSIC: return "Play a song while tuning EQ";
+        case SCREEN_MUSIC_BROWSER: return g_media_listing.path[0] ? g_media_listing.path : "Choose a folder";
         case SCREEN_THEMES: return "Choose the app color style";
         case SCREEN_SETTINGS: return "Choose where EQ applies";
         case SCREEN_ABOUT: return "Controls, version, and help";
@@ -1111,10 +1310,11 @@ static app_screen_t home_screen_for_row(int row)
         case 1: return SCREEN_SIMPLE;
         case 2: return SCREEN_ADVANCED;
         case 3: return SCREEN_PRESETS;
-        case 4: return SCREEN_THEMES;
-        case 5: return SCREEN_SETTINGS;
-        case 6: return SCREEN_STATUS;
-        case 7: return SCREEN_ABOUT;
+        case 4: return SCREEN_MUSIC;
+        case 5: return SCREEN_THEMES;
+        case 6: return SCREEN_SETTINGS;
+        case 7: return SCREEN_STATUS;
+        case 8: return SCREEN_ABOUT;
         default: return SCREEN_HOME;
     }
 }
@@ -1122,11 +1322,13 @@ static app_screen_t home_screen_for_row(int row)
 static int current_row_count(void)
 {
     switch (g_screen) {
-        case SCREEN_HOME: return 8;
+        case SCREEN_HOME: return 9;
         case SCREEN_STATUS: return STATUS_ROW_COUNT;
         case SCREEN_PRESETS: return PRESETS_ROW_COUNT;
         case SCREEN_SIMPLE: return SIMPLE_ROW_COUNT;
         case SCREEN_ADVANCED: return ADVANCED_ROW_COUNT;
+        case SCREEN_MUSIC: return MUSIC_ROW_COUNT;
+        case SCREEN_MUSIC_BROWSER: return g_media_listing.count;
         case SCREEN_THEMES: return eq_ui_theme_count();
         case SCREEN_SETTINGS: return SETTINGS_ROW_COUNT;
         case SCREEN_ABOUT: return ABOUT_ROW_COUNT;
@@ -1248,7 +1450,8 @@ static void row_value(char *value, size_t value_size, app_screen_t screen, int r
         case SCREEN_HOME:
             if (row == 0) snprintf(value, value_size, "%s", g_control.enabled ? "On" : "Off");
             else if (row == 3) snprintf(value, value_size, "Slot %d", g_preset_slot + 1);
-            else if (row == 4) snprintf(value, value_size, "%s", eq_ui_theme_name(eq_ui_theme_index()));
+            else if (row == 4) snprintf(value, value_size, "%s", eqvita_media_player_state_label(g_media_status.state));
+            else if (row == 5) snprintf(value, value_size, "%s", eq_ui_theme_name(eq_ui_theme_index()));
             break;
         case SCREEN_STATUS:
             if (row == STATUS_ROW_EQ_STATUS) snprintf(value, value_size, "%s", g_control.enabled ? (g_status.eq_active ? "Active" : bypass_reason_str(g_status.bypass_reason)) : "Off");
@@ -1293,6 +1496,23 @@ static void row_value(char *value, size_t value_size, app_screen_t screen, int r
                 snprintf(value, value_size, "Slot %d", ((g_preset_slot + 1) % 3) + 1);
             }
             break;
+        case SCREEN_MUSIC:
+            if (row == MUSIC_ROW_PLAY_PAUSE) {
+                snprintf(value, value_size, "%s", eqvita_media_player_state_label(g_media_status.state));
+            } else if (row == MUSIC_ROW_LOOP) {
+                snprintf(value, value_size, "%s", g_media_status.loop ? "On" : "Off");
+            } else if (row == MUSIC_ROW_VOLUME) {
+                snprintf(value, value_size, "%d%%", g_media_status.volume);
+            }
+            break;
+        case SCREEN_MUSIC_BROWSER:
+            if (row >= 0 && row < g_media_listing.count) {
+                eqvita_media_entry_t *entry = &g_media_listing.entries[row];
+                snprintf(value, value_size, "%s",
+                         entry->kind == EQVITA_MEDIA_ENTRY_FILE ? "Play" :
+                         entry->kind == EQVITA_MEDIA_ENTRY_PARENT ? "Back" : "Open");
+            }
+            break;
         case SCREEN_THEMES:
             if (row == eq_ui_theme_index()) snprintf(value, value_size, "Active");
             break;
@@ -1331,13 +1551,14 @@ static void row_text(app_screen_t screen,
 
     switch (screen) {
         case SCREEN_HOME: {
-            static const char *icons[] = {"power", "simple", "advanced", "preset", "themes", "settings", "status", "about"};
-            static const char *labels[] = {"Equalizer", "Simple EQ", "Advanced EQ", "Presets", "Themes", "Settings", "Telemetry", "Help"};
+            static const char *icons[] = {"power", "simple", "advanced", "preset", "music", "themes", "settings", "status", "about"};
+            static const char *labels[] = {"Equalizer", "Simple EQ", "Advanced EQ", "Presets", "Music Preview", "Themes", "Settings", "Telemetry", "Help"};
             static const char *descs[] = {
                 "Turn sound tuning on or off",
                 "Adjust bass, mids, treble",
                 "Fine tune every band",
                 "Choose or save profiles",
+                "Play a song while tuning EQ",
                 "Choose the app color style",
                 "Output scope and safety",
                 "Live output and app status",
@@ -1525,6 +1746,44 @@ static void row_text(app_screen_t screen,
                 *kind = EQ_UI_ROW_ACTION;
             }
             break;
+        case SCREEN_MUSIC:
+            if (row == MUSIC_ROW_CHOOSE) {
+                *icon = "folder";
+                *label = "Choose file";
+                *desc = "Pick OGG, MP3, or WAV";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == MUSIC_ROW_PLAY_PAUSE) {
+                *icon = "play";
+                *label = "Play / Pause";
+                *desc = "Pause or resume preview";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == MUSIC_ROW_STOP) {
+                *icon = "stop";
+                *label = "Stop";
+                *desc = "Stop and release audio";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == MUSIC_ROW_LOOP) {
+                *icon = "loop";
+                *label = "Loop";
+                *desc = "Repeat the selected song";
+                *kind = EQ_UI_ROW_ACTION;
+            } else if (row == MUSIC_ROW_VOLUME) {
+                *icon = "level";
+                *label = "Volume";
+                *desc = "Preview player volume";
+                *kind = EQ_UI_ROW_ADJUST;
+            }
+            break;
+        case SCREEN_MUSIC_BROWSER:
+            if (row >= 0 && row < g_media_listing.count) {
+                eqvita_media_entry_t *entry = &g_media_listing.entries[row];
+                *icon = entry->kind == EQVITA_MEDIA_ENTRY_FILE ? "file" : "folder";
+                *label = entry->name;
+                *desc = entry->kind == EQVITA_MEDIA_ENTRY_FILE ? "Play this song" :
+                    entry->kind == EQVITA_MEDIA_ENTRY_PARENT ? "Go up one folder" : "Open folder";
+                *kind = entry->kind == EQVITA_MEDIA_ENTRY_FILE ? EQ_UI_ROW_ACTION : EQ_UI_ROW_NAV;
+            }
+            break;
         case SCREEN_THEMES:
             *icon = "themes";
             *label = eq_ui_theme_name(row);
@@ -1648,6 +1907,116 @@ static void row_text(app_screen_t screen,
     }
 }
 
+static void draw_music_player_screen(void)
+{
+    eq_ui_music_action_row_t actions[MUSIC_ROW_COUNT];
+    char values[MUSIC_ROW_COUNT][64];
+    char stream_info[64];
+    char preamp[32];
+    char preset[32];
+    char eq_state[32];
+    char output[32];
+    char headroom[32];
+    const char *file_name = g_media_status.path[0] ?
+        eqvita_media_browser_file_name(g_media_status.path) : "No song selected";
+
+    for (int row = 0; row < MUSIC_ROW_COUNT; ++row) {
+        const char *icon;
+        const char *label;
+        const char *desc;
+        eq_ui_row_kind_t kind;
+
+        row_text(SCREEN_MUSIC, row, &icon, &label, &desc, &kind);
+        row_value(values[row], sizeof(values[row]), SCREEN_MUSIC, row);
+        actions[row].row_index = row;
+        actions[row].icon = icon;
+        actions[row].label = label;
+        actions[row].description = desc;
+        actions[row].value = values[row];
+        actions[row].kind = kind;
+    }
+
+    if (g_media_status.sample_rate > 0) {
+        snprintf(stream_info, sizeof(stream_info), "%s - %u Hz / %u ch",
+                 eqvita_media_player_format_label(g_media_status.format),
+                 g_media_status.sample_rate, g_media_status.channels);
+    } else {
+        snprintf(stream_info, sizeof(stream_info), "No stream yet");
+    }
+    format_db(preamp, sizeof(preamp), g_control.preamp_mdB);
+    snprintf(preset, sizeof(preset), "Slot %d", g_preset_slot + 1);
+    snprintf(eq_state, sizeof(eq_state), "%s", g_control.enabled ? "EQ on" : "EQ off");
+    snprintf(output, sizeof(output), "%s", g_control.speaker_only ? "Speakers" : "All outputs");
+    snprintf(headroom, sizeof(headroom), "%s", headroom_mode_str(eq_control_get_headroom_mode(&g_control)));
+
+    eq_ui_music_player_model_t model = {
+        file_name,
+        g_media_status.path,
+        eqvita_media_player_state_label(g_media_status.state),
+        eqvita_media_player_format_label(g_media_status.format),
+        stream_info,
+        eq_state,
+        preset,
+        output,
+        preamp,
+        headroom,
+        g_selected[SCREEN_MUSIC],
+        actions,
+        MUSIC_ROW_COUNT,
+        g_row_bounds,
+        EQ_UI_MAX_VISIBLE_ROWS,
+        &g_row_bound_count
+    };
+
+    g_row_bound_count = 0;
+    eq_ui_draw_music_player_deck(&model);
+}
+
+static void draw_music_browser_screen(void)
+{
+    eq_ui_music_browser_entry_t entries[EQ_UI_MAX_VISIBLE_ROWS];
+    char values[EQ_UI_MAX_VISIBLE_ROWS][64];
+    int visible = visible_row_capacity();
+    int scroll = g_scroll_top[SCREEN_MUSIC_BROWSER];
+    int count = current_row_count();
+    int entry_count = 0;
+
+    if (visible > EQ_UI_MAX_VISIBLE_ROWS) {
+        visible = EQ_UI_MAX_VISIBLE_ROWS;
+    }
+
+    for (int i = 0; i < visible && scroll + i < count; ++i) {
+        int row = scroll + i;
+        const char *icon;
+        const char *label;
+        const char *desc;
+        eq_ui_row_kind_t kind;
+
+        row_text(SCREEN_MUSIC_BROWSER, row, &icon, &label, &desc, &kind);
+        row_value(values[entry_count], sizeof(values[entry_count]), SCREEN_MUSIC_BROWSER, row);
+        entries[entry_count].row_index = row;
+        entries[entry_count].icon = icon;
+        entries[entry_count].label = label;
+        entries[entry_count].description = desc;
+        entries[entry_count].value = values[entry_count];
+        entries[entry_count].kind = kind;
+        entry_count++;
+    }
+
+    eq_ui_music_browser_model_t model = {
+        g_media_listing.path,
+        g_selected[SCREEN_MUSIC_BROWSER],
+        entries,
+        entry_count,
+        g_row_bounds,
+        EQ_UI_MAX_VISIBLE_ROWS,
+        &g_row_bound_count
+    };
+
+    g_row_bound_count = 0;
+    eq_ui_draw_music_browser_deck(&model);
+}
+
 static void draw_current_rows(void)
 {
     int count = current_row_count();
@@ -1707,6 +2076,11 @@ static void render_frame(void)
         "Discard and leave",
         "Keep editing"
     };
+    const char *exit_prompt_icons[] = {
+        "save",
+        "reset",
+        "tune"
+    };
     char exit_prompt_title[64];
 
     ensure_selection_visible();
@@ -1735,8 +2109,18 @@ static void render_frame(void)
              eq_target_str());
 
     eq_ui_begin_frame();
-    eq_ui_draw_shell(screen_title(g_screen), g_screen == SCREEN_HOME ? subtitle : screen_subtitle(g_screen), left, right);
-    draw_current_rows();
+    if (g_screen == SCREEN_MUSIC || g_screen == SCREEN_MUSIC_BROWSER) {
+        eq_ui_draw_shell("", "", left, right);
+    } else {
+        eq_ui_draw_shell(screen_title(g_screen), g_screen == SCREEN_HOME ? subtitle : screen_subtitle(g_screen), left, right);
+    }
+    if (g_screen == SCREEN_MUSIC) {
+        draw_music_player_screen();
+    } else if (g_screen == SCREEN_MUSIC_BROWSER) {
+        draw_music_browser_screen();
+    } else {
+        draw_current_rows();
+    }
     eq_ui_draw_footer(footer_left, footer_center, "Triangle Help");
     if (g_message_frames > 0 && g_message[0]) {
         eq_ui_draw_message(g_message);
@@ -1747,6 +2131,7 @@ static void render_frame(void)
         eq_ui_draw_confirm_dialog(exit_prompt_title,
                                   "Live EQ keeps playing either way.",
                                   exit_prompt_actions,
+                                  exit_prompt_icons,
                                   3,
                                   g_exit_prompt_selected);
     }
@@ -1776,6 +2161,12 @@ static void adjust_current(int delta)
                 adjust_band(row - ADV_BAND_ROW_BASE, delta);
             } else if (row == ADV_ROW_PRESET_SLOT) {
                 adjust_preset_slot(delta > 0 ? 1 : -1);
+            }
+            break;
+        case SCREEN_MUSIC:
+            if (row == MUSIC_ROW_VOLUME) {
+                eqvita_media_player_adjust_volume(&g_media_player, delta > 0 ? 5 : -5);
+                g_media_status = eqvita_media_player_status(&g_media_player);
             }
             break;
         case SCREEN_THEMES: {
@@ -1821,6 +2212,46 @@ static void activate_current(void)
             else if (row == ADV_ROW_SAVE_NEXT) save_as_next_preset();
             else if (row == ADV_ROW_UNDO_ENTRY) restore_eq_entry();
             else if (row == ADV_ROW_RESET_EQ) reset_defaults();
+            break;
+        case SCREEN_MUSIC:
+            if (row == MUSIC_ROW_CHOOSE) {
+                open_music_browser_roots();
+            } else if (row == MUSIC_ROW_PLAY_PAUSE) {
+                if (!g_media_status.path[0]) {
+                    set_message("Choose a music file first");
+                } else if (g_media_status.state == EQVITA_MEDIA_PLAYER_STOPPED ||
+                           g_media_status.state == EQVITA_MEDIA_PLAYER_FINISHED ||
+                           g_media_status.state == EQVITA_MEDIA_PLAYER_ERROR) {
+                    media_player_play_selected(g_media_status.path);
+                } else {
+                    eqvita_media_player_toggle_pause(&g_media_player);
+                    g_media_status = eqvita_media_player_status(&g_media_player);
+                }
+            } else if (row == MUSIC_ROW_STOP) {
+                eqvita_media_player_stop(&g_media_player);
+                g_media_status = eqvita_media_player_status(&g_media_player);
+                set_message("Preview stopped");
+            } else if (row == MUSIC_ROW_LOOP) {
+                eqvita_media_player_set_loop(&g_media_player, !g_media_status.loop);
+                g_media_status = eqvita_media_player_status(&g_media_player);
+                set_message(g_media_status.loop ? "Loop on" : "Loop off");
+            }
+            break;
+        case SCREEN_MUSIC_BROWSER:
+            if (row >= 0 && row < g_media_listing.count) {
+                eqvita_media_entry_t *entry = &g_media_listing.entries[row];
+                char next_path[EQVITA_MEDIA_MAX_PATH];
+                if (snprintf(next_path, sizeof(next_path), "%s", entry->path) < 0) {
+                    set_message("Path error");
+                    break;
+                }
+                if (entry->kind == EQVITA_MEDIA_ENTRY_FILE) {
+                    media_player_play_selected(next_path);
+                    change_screen(SCREEN_MUSIC);
+                } else {
+                    open_music_browser_path(next_path);
+                }
+            }
             break;
         case SCREEN_THEMES:
             apply_theme_index(row);
@@ -1978,12 +2409,13 @@ static void handle_touch(void)
 
 int main(void)
 {
-    SceCtrlData last = {0};
     int repeat_timer = 0;
     int last_buttons = 0;
     eqvita_startup_source_t startup_source = EQVITA_STARTUP_SOURCE_DEFAULT;
 
     eqvita_app_state_init(&g_app_state);
+    eqvita_media_player_init(&g_media_player);
+    g_media_status = eqvita_media_player_status(&g_media_player);
     init_button_mapping();
     eq_ui_set_theme(load_theme_index());
     if (eq_ui_init() < 0) {
@@ -2031,20 +2463,26 @@ int main(void)
         startup_source_str(g_plugin_compatible ? startup_source : EQVITA_STARTUP_SOURCE_DEFAULT),
         g_preset_slot + 1,
         route_str(g_control.route_hint));
+    if (sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG) < 0) {
+        app_log("input: analog sampling unavailable");
+    }
 
     while (1) {
         SceCtrlData pad;
         int newly;
         int held;
         int active_input;
+        int buttons;
 
         if (sceCtrlPeekBufferPositive(0, &pad, 1) < 0) {
             render_frame();
+            sceKernelDelayThread(1000);
             continue;
         }
 
-        newly = (~last.buttons) & pad.buttons;
-        held = pad.buttons;
+        buttons = (int)(pad.buttons | analog_navigation_buttons(&pad));
+        newly = (~last_buttons) & buttons;
+        held = buttons;
 
         if (held != last_buttons) {
             repeat_timer = 0;
@@ -2062,8 +2500,6 @@ int main(void)
         } else {
             repeat_timer = 0;
         }
-
-        last = pad;
 
         if (g_exit_prompt_active) {
             if (active_input & SCE_CTRL_UP) {
@@ -2093,6 +2529,10 @@ int main(void)
             if (g_screen == SCREEN_HOME) {
                 break;
             }
+            if (g_screen == SCREEN_MUSIC_BROWSER) {
+                leave_music_browser();
+                continue;
+            }
             request_leave_current_screen();
         } else if (newly & SCE_CTRL_TRIANGLE) {
             change_screen(SCREEN_ABOUT);
@@ -2102,11 +2542,14 @@ int main(void)
 
         handle_touch();
         refresh_route_hint();
+        media_player_poll_log();
         render_frame();
         maybe_log_status();
         maybe_log_diagnostics();
+        sceKernelDelayThread(1000);
     }
 
+    eqvita_media_player_shutdown(&g_media_player);
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_STOP);
     eq_ui_fini();
     return sceKernelExitProcess(0);

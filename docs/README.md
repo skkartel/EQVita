@@ -6,6 +6,12 @@ Start here when you forgot where things live.
 
 - [Build EQVita](build/how-to-build.md) - VitaSDK, WSL, host tests, and artifact paths.
 
+## App
+
+- [UI Design Notes](app/ui-design.md) - app screen patterns, dialog rules, and input behavior.
+- [Themes And Icons](app/themes-and-icons.md) - theme intent, icon atlas constraints, and how to extend icons.
+- [README Media](app/readme-media.md) - APNG generation, README preview assets, and crop fixes.
+
 ## Testing
 
 - [Hardware Test Checklist](testing/hardware-test-checklist.md) - manual Vita test flow before releases or audio claims.

@@ -100,6 +100,31 @@ target_compile_definitions(test_app_ui_source PRIVATE
 
 add_test(NAME app_ui_source COMMAND test_app_ui_source)
 
+add_executable(test_media_browser
+  test_media_browser.c
+  ${CMAKE_SOURCE_DIR}/app/media_browser.c
+)
+
+target_compile_definitions(test_media_browser PRIVATE
+  EQVITA_HOST_TESTS=1
+)
+
+target_include_directories(test_media_browser PRIVATE
+  ${CMAKE_SOURCE_DIR}
+)
+
+add_test(NAME media_browser COMMAND test_media_browser)
+
+add_executable(test_media_player_source
+  test_media_player_source.c
+)
+
+target_compile_definitions(test_media_player_source PRIVATE
+  EQVITA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+add_test(NAME media_player_source COMMAND test_media_player_source)
+
 add_executable(test_plugin_source
   test_plugin_source.c
 )

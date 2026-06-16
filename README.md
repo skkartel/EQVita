@@ -55,6 +55,7 @@ The theme switcher exists because staring at EQ sliders should at least look cle
 - Advanced EQ mode for every band and preamp.
 - Built-in `STOCK Depth` and `MOD Switch` presets.
 - Preset slots with save/load support.
+- Music Preview for playing a local `OGG`, `MP3`, or `WAV` while tuning EQ.
 - Speaker-only mode or all-output mode for wired/Bluetooth too.
 - Optional HPF (Bass guard), which cuts very low rumble.
 - Safe, Loud, and Direct headroom modes.
@@ -121,9 +122,30 @@ There are three preset slots. EQ changes apply live, and saving writes the curre
 
 The built-in presets are starting points. Applying `STOCK Depth` or `MOD Switch` saves that preset into the active slot and startup state.
 
+Small warning: every Vita, speaker mod, headphone, and Bluetooth setup is different. Blindly copying my bass-heavy presets can cause clipping or ugly distortion on your setup. If that happens, lower preamp first.
+
+If you make a preset that sounds nice, please share it in this repo's [Discussions](https://github.com/shev0k/EQVita/discussions). Over time, it would be cool to build a small preset library from real user setups instead of pretending one preset fits everything.
+
 The boot state is what lets the plugin load your saved sound after reboot, before you open the app again.
 
 Old raw `preset%d.bin` files are imported read-only when a matching `.eqvp` file does not exist.
+
+## Music Preview
+
+The app can play a local song while you tune EQ.
+
+<p align="center">
+  <img src="media/music-preview.png" alt="EQVita Music Preview" width="100%">
+</p>
+
+Put an `OGG`, `MP3`, or `WAV` file somewhere on your Vita, open `Music Preview`, choose the file, then adjust EQ like normal.
+
+Notes:
+
+- No music is bundled in the VPK.
+- `ux0:music/` is shown as a shortcut in the file picker when available.
+- Preview playback stops and releases the audio port when you stop it or close EQVita.
+- This is only for tuning. It is not trying to replace your normal music player.
 
 ## Output Modes
 
@@ -147,6 +169,20 @@ Short bypasses can happen when the Vita opens, closes, or reconfigures audio por
 <summary><strong>I changed EQ but hear no difference.</strong></summary>
 
 Check that EQ is on, the output mode matches what you are using, and the app/plugin versions match.
+
+</details>
+
+<details>
+<summary><strong>Music Preview does not show my file.</strong></summary>
+
+Only `OGG`, `MP3`, and `WAV` files are shown. Try putting the file under `ux0:/music/` or another normal folder on your memory card.
+
+</details>
+
+<details>
+<summary><strong>Music Preview cannot play a file.</strong></summary>
+
+Try another file first. For WAV, use normal 16-bit PCM. If it still fails, open EQVita once more and share `ur0:data/eqvita/app.log`.
 
 </details>
 
@@ -211,6 +247,8 @@ Release checks:
 ```
 
 More detail: [docs/build/how-to-build.md](docs/build/how-to-build.md).
+
+UI, theme, icon, and README media notes live in [docs/app/ui-design.md](docs/app/ui-design.md), [docs/app/themes-and-icons.md](docs/app/themes-and-icons.md), and [docs/app/readme-media.md](docs/app/readme-media.md).
 
 ## Repo Layout
 

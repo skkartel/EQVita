@@ -37,6 +37,57 @@ typedef enum eq_ui_row_kind
     EQ_UI_ROW_SECTION
 } eq_ui_row_kind_t;
 
+typedef struct eq_ui_music_action_row
+{
+    int row_index;
+    const char *icon;
+    const char *label;
+    const char *description;
+    const char *value;
+    eq_ui_row_kind_t kind;
+} eq_ui_music_action_row_t;
+
+typedef struct eq_ui_music_player_model
+{
+    const char *file_name;
+    const char *file_path;
+    const char *state;
+    const char *format;
+    const char *stream_info;
+    const char *eq_state;
+    const char *preset;
+    const char *output;
+    const char *preamp;
+    const char *headroom;
+    int selected_row;
+    const eq_ui_music_action_row_t *actions;
+    int action_count;
+    eq_ui_row_bounds_t *bounds;
+    int max_bounds;
+    int *bound_count;
+} eq_ui_music_player_model_t;
+
+typedef struct eq_ui_music_browser_entry
+{
+    int row_index;
+    const char *icon;
+    const char *label;
+    const char *description;
+    const char *value;
+    eq_ui_row_kind_t kind;
+} eq_ui_music_browser_entry_t;
+
+typedef struct eq_ui_music_browser_model
+{
+    const char *path;
+    int selected_row;
+    const eq_ui_music_browser_entry_t *entries;
+    int entry_count;
+    eq_ui_row_bounds_t *bounds;
+    int max_bounds;
+    int *bound_count;
+} eq_ui_music_browser_model_t;
+
 int eq_ui_init(void);
 void eq_ui_fini(void);
 void eq_ui_begin_frame(void);
@@ -56,6 +107,7 @@ void eq_ui_draw_message(const char *message);
 void eq_ui_draw_confirm_dialog(const char *title,
                                const char *body,
                                const char * const *actions,
+                               const char * const *icons,
                                int action_count,
                                int selected_action);
 void eq_ui_draw_row(int visible_index,
@@ -82,3 +134,5 @@ void eq_ui_draw_status_chip(float x,
                             const char *label,
                             const char *value,
                             unsigned int color);
+void eq_ui_draw_music_player_deck(const eq_ui_music_player_model_t *model);
+void eq_ui_draw_music_browser_deck(const eq_ui_music_browser_model_t *model);

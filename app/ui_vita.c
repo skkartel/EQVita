@@ -20,6 +20,12 @@
 #define FOOTER_ICON_TRIANGLE 14
 #define AFFORDANCE_ICON_LEFT 15
 #define AFFORDANCE_ICON_RIGHT 16
+#define PLAYER_ICON_MUSIC 17
+#define PLAYER_ICON_PLAY 18
+#define PLAYER_ICON_STOP 19
+#define PLAYER_ICON_LOOP 20
+#define PLAYER_ICON_FOLDER 21
+#define PLAYER_ICON_FILE 22
 
 typedef struct eq_ui_theme
 {
@@ -257,6 +263,12 @@ static int icon_index(const char *icon)
     if (strcmp(icon, "level") == 0) return 9;
     if (strcmp(icon, "status") == 0) return 10;
     if (strcmp(icon, "save") == 0) return 11;
+    if (strcmp(icon, "music") == 0) return PLAYER_ICON_MUSIC;
+    if (strcmp(icon, "play") == 0) return PLAYER_ICON_PLAY;
+    if (strcmp(icon, "stop") == 0) return PLAYER_ICON_STOP;
+    if (strcmp(icon, "loop") == 0) return PLAYER_ICON_LOOP;
+    if (strcmp(icon, "folder") == 0) return PLAYER_ICON_FOLDER;
+    if (strcmp(icon, "file") == 0) return PLAYER_ICON_FILE;
     return 10;
 }
 
@@ -517,17 +529,28 @@ void eq_ui_draw_shell(const char *title,
                       const char *right_status)
 {
     const eq_ui_theme_t *t = theme();
-    int title_w = text_width(TEXT_SIZE, title);
+    int title_w;
     char fitted_subtitle[192];
     int subtitle_w;
 
+    if (!title) {
+        title = "";
+    }
+    if (!subtitle) {
+        subtitle = "";
+    }
+    title_w = text_width(TEXT_SIZE, title);
     fit_text(fitted_subtitle, sizeof(fitted_subtitle), TEXT_SIZE, subtitle, 820);
     subtitle_w = text_width(TEXT_SIZE, fitted_subtitle);
 
     draw_text_fit(24, 24, TEXT_SIZE, t->text, left_status, 380);
     draw_text_right_fit(936, 24, TEXT_SIZE, t->text, right_status, 380);
-    draw_text((EQ_UI_SCREEN_W - title_w) / 2.0f, 66, TEXT_SIZE, t->text, title);
-    draw_text((EQ_UI_SCREEN_W - subtitle_w) / 2.0f, 96, TEXT_SIZE, t->subtext, fitted_subtitle);
+    if (title[0]) {
+        draw_text((EQ_UI_SCREEN_W - title_w) / 2.0f, 66, TEXT_SIZE, t->text, title);
+    }
+    if (fitted_subtitle[0]) {
+        draw_text((EQ_UI_SCREEN_W - subtitle_w) / 2.0f, 96, TEXT_SIZE, t->subtext, fitted_subtitle);
+    }
 }
 
 static void draw_icon_cell(float cx, float cy, int idx, int variant, float scale, unsigned int color)
@@ -613,9 +636,12 @@ void eq_ui_draw_message(const char *message)
     draw_text_fit((float)x + 22, 477, TEXT_SIZE, t->text, message, w - 44);
 }
 
+static void draw_icon_symbol(float cx, float cy, const char *icon, eq_ui_row_kind_t kind, int selected);
+
 void eq_ui_draw_confirm_dialog(const char *title,
                                const char *body,
                                const char * const *actions,
+                               const char * const *icons,
                                int action_count,
                                int selected_action)
 {
@@ -653,12 +679,25 @@ void eq_ui_draw_confirm_dialog(const char *title,
         int selected = i == selected_action;
         unsigned int back = selected ? t->selected_row : mix_color(t->row, t->bg_bottom, 2, 3);
         unsigned int text = selected ? t->selected_text : t->text;
+        const char *icon = icons ? icons[i] : NULL;
 
         vita2d_draw_rectangle((float)(x + 18), (float)row_y, (float)(w - 36), EQ_UI_DIALOG_ROW_H, back);
         if (selected) {
             vita2d_draw_rectangle((float)(x + 18), (float)row_y, 6.0f, EQ_UI_DIALOG_ROW_H, t->accent);
         }
-        draw_text_fit((float)x + 42, (float)row_y + 31, TEXT_SIZE, text, actions[i], w - 84);
+        draw_icon_symbol((float)x + 50, (float)row_y + EQ_UI_DIALOG_ROW_H * 0.5f, icon, EQ_UI_ROW_ACTION, selected);
+        draw_text_fit((float)x + 82, (float)row_y + 31, TEXT_SIZE, text, actions[i], w - 150);
+        if (selected) {
+            float check_x = (float)(x + w - 54);
+            float check_y = (float)row_y + EQ_UI_DIALOG_ROW_H * 0.5f;
+            unsigned int check_back = color_alpha(t->selected_icon_bg, 235);
+            unsigned int check_text = t->selected_icon_fg;
+            vita2d_draw_fill_circle(check_x, check_y, 12.0f, check_back);
+            vita2d_draw_line(check_x - 6.0f, check_y, check_x - 2.0f, check_y + 5.0f, check_text);
+            vita2d_draw_line(check_x - 5.0f, check_y, check_x - 1.0f, check_y + 5.0f, check_text);
+            vita2d_draw_line(check_x - 2.0f, check_y + 5.0f, check_x + 8.0f, check_y - 7.0f, check_text);
+            vita2d_draw_line(check_x - 1.0f, check_y + 5.0f, check_x + 9.0f, check_y - 7.0f, check_text);
+        }
     }
 }
 
@@ -707,6 +746,226 @@ static void draw_row_affordance(float right, float y, eq_ui_row_kind_t kind, int
     } else if (kind == EQ_UI_ROW_ADJUST) {
         draw_icon_cell(right - 31, y + 26, AFFORDANCE_ICON_LEFT, 0, CHEVRON_ICON_SCALE, dim);
         draw_icon_cell(right - 6, y + 26, AFFORDANCE_ICON_RIGHT, 0, CHEVRON_ICON_SCALE, dim);
+    }
+}
+
+static void add_bound(eq_ui_row_bounds_t *bounds,
+                      int max_bounds,
+                      int *bound_count,
+                      int row,
+                      int x,
+                      int y,
+                      int w,
+                      int h)
+{
+    if (!bounds || !bound_count || *bound_count < 0 || *bound_count >= max_bounds) {
+        return;
+    }
+
+    bounds[*bound_count].row = row;
+    bounds[*bound_count].x = x;
+    bounds[*bound_count].y = y;
+    bounds[*bound_count].w = w;
+    bounds[*bound_count].h = h;
+    (*bound_count)++;
+}
+
+static void draw_panel(float x, float y, float w, float h, unsigned int color)
+{
+    const eq_ui_theme_t *t = theme();
+
+    vita2d_draw_rectangle(x, y, w, h, color);
+    vita2d_draw_rectangle(x, y, w, 2.0f, color_alpha(t->accent, 120));
+    vita2d_draw_rectangle(x, y + h - 2.0f, w, 2.0f, color_alpha(t->bg_bottom, 110));
+}
+
+static void draw_music_chip(float x, float y, float w, const char *label, const char *value)
+{
+    const eq_ui_theme_t *t = theme();
+
+    vita2d_draw_rectangle(x, y, w, 42.0f, mix_color(t->row, t->bg_bottom, 1, 4));
+    vita2d_draw_rectangle(x, y, 4.0f, 42.0f, color_alpha(t->accent, 190));
+    draw_text_fit(x + 14.0f, y + 17.0f, TEXT_SIZE, t->subtext, label, (int)w - 28);
+    draw_text_fit(x + 14.0f, y + 37.0f, TEXT_SIZE, t->text, value, (int)w - 28);
+}
+
+static void draw_music_visualizer(float x, float y, float w, float h)
+{
+    const eq_ui_theme_t *t = theme();
+    static const int heights[] = {
+        18, 22, 26, 31, 38, 50, 66, 78, 62, 46, 35, 29,
+        20, 16, 24, 19, 21, 30, 38, 48, 58, 44, 36, 32,
+        28, 22, 18, 16, 24, 34, 42, 25
+    };
+    int count = (int)(sizeof(heights) / sizeof(heights[0]));
+    float gap = 5.0f;
+    float bar_w = (w - gap * (count - 1)) / count;
+
+    if (bar_w < 3.0f) {
+        bar_w = 3.0f;
+    }
+
+    vita2d_draw_rectangle(x, y + h - 3.0f, w, 3.0f, color_alpha(t->accent, 150));
+    for (int i = 0; i < count; ++i) {
+        float bar_h = (float)heights[i];
+        if (bar_h > h - 8.0f) {
+            bar_h = h - 8.0f;
+        }
+        vita2d_draw_rectangle(x + i * (bar_w + gap),
+                              y + h - bar_h,
+                              bar_w,
+                              bar_h - 4.0f,
+                              color_alpha(t->accent, 175));
+    }
+}
+
+static void draw_music_action_row(float x,
+                                  float y,
+                                  float w,
+                                  float h,
+                                  int selected,
+                                  int row_index,
+                                  const char *icon,
+                                  const char *label,
+                                  const char *description,
+                                  const char *value,
+                                  eq_ui_row_kind_t kind,
+                                  eq_ui_row_bounds_t *bounds,
+                                  int max_bounds,
+                                  int *bound_count)
+{
+    const eq_ui_theme_t *t = theme();
+    unsigned int back = selected ? t->selected_row :
+        kind == EQ_UI_ROW_ADJUST ? mix_color(t->row, t->selected_backdrop, 1, 7) :
+        kind == EQ_UI_ROW_READONLY ? mix_color(t->row, t->bg_bottom, 1, 3) :
+        mix_color(t->row, t->selected_backdrop, 1, 10);
+    unsigned int text = selected ? t->selected_text : t->text;
+    unsigned int sub = selected ? t->selected_text : t->subtext;
+
+    add_bound(bounds, max_bounds, bound_count, row_index, (int)x, (int)y, (int)w, (int)h);
+
+    if (selected) {
+        vita2d_draw_rectangle(x - 8.0f, y - 3.0f, w + 16.0f, h + 6.0f, t->selected_backdrop);
+    }
+    vita2d_draw_rectangle(x, y, w, h, back);
+    draw_icon_symbol(x + 28.0f, y + h * 0.5f, icon, kind, selected);
+    draw_text_fit(x + 58.0f, y + h * 0.44f, TEXT_SIZE, text, label, 265);
+    draw_text_fit(x + 58.0f, y + h * 0.86f, TEXT_SIZE, sub, description, 310);
+    if (value && value[0]) {
+        const float value_right = kind == EQ_UI_ROW_ADJUST ? x + w - 78.0f : x + w - 52.0f;
+        const int value_width = kind == EQ_UI_ROW_ADJUST ? 112 : 150;
+        draw_text_right_fit(value_right, y + h * 0.64f, TEXT_SIZE, text, value, value_width);
+    }
+    draw_row_affordance(x + w - 20.0f, y - 4.0f, kind, selected, text);
+}
+
+void eq_ui_draw_music_player_deck(const eq_ui_music_player_model_t *model)
+{
+    const eq_ui_theme_t *t = theme();
+    int count;
+
+    if (!model) {
+        return;
+    }
+    if (model->bound_count) {
+        *model->bound_count = 0;
+    }
+
+    draw_panel(52.0f, 74.0f, 326.0f, 304.0f, mix_color(t->row, t->bg_mid, 1, 5));
+    draw_icon_cell(215.0f, 191.0f, PLAYER_ICON_MUSIC, ICON_VARIANT_NORMAL, 2.1f, C(255, 255, 255, 255));
+    draw_music_visualizer(76.0f, 296.0f, 278.0f, 60.0f);
+
+    draw_panel(52.0f, 392.0f, 326.0f, 88.0f, mix_color(t->row, t->bg_bottom, 1, 4));
+    draw_text_fit(72.0f, 418.0f, TEXT_SIZE, t->subtext, "EQ session", 130);
+    draw_text_fit(72.0f, 449.0f, TEXT_SIZE, t->text, model->preset, 84);
+    draw_text_fit(176.0f, 449.0f, TEXT_SIZE, t->text, model->output, 96);
+    draw_text_right_fit(356.0f, 449.0f, TEXT_SIZE, t->text, model->eq_state, 68);
+
+    draw_panel(398.0f, 74.0f, 510.0f, 104.0f, mix_color(t->row, t->bg_bottom, 1, 4));
+    draw_text_fit(424.0f, 105.0f, TEXT_SIZE, t->text,
+                  model->file_name && model->file_name[0] ? model->file_name : "No song selected",
+                  450);
+    draw_text_fit(424.0f, 134.0f, TEXT_SIZE, t->subtext,
+                  model->file_path && model->file_path[0] ? model->file_path : "Choose a local OGG, MP3, or WAV",
+                  450);
+    draw_text_fit(424.0f, 162.0f, TEXT_SIZE, t->subtext, model->stream_info, 350);
+    draw_text_right_fit(884.0f, 162.0f, TEXT_SIZE, t->text, model->state, 170);
+
+    draw_music_chip(398.0f, 190.0f, 158.0f, "Preamp", model->preamp);
+    draw_music_chip(574.0f, 190.0f, 158.0f, "Sound mode", model->headroom);
+    draw_music_chip(750.0f, 190.0f, 158.0f, "Output", model->output);
+
+    count = model->action_count;
+    if (count > 5) {
+        count = 5;
+    }
+    for (int i = 0; i < count; ++i) {
+        const eq_ui_music_action_row_t *row = &model->actions[i];
+        draw_music_action_row(398.0f,
+                              252.0f + i * 45.0f,
+                              510.0f,
+                              42.0f,
+                              row->row_index == model->selected_row,
+                              row->row_index,
+                              row->icon,
+                              row->label,
+                              row->description,
+                              row->value,
+                              row->kind,
+                              model->bounds,
+                              model->max_bounds,
+                              model->bound_count);
+    }
+}
+
+void eq_ui_draw_music_browser_deck(const eq_ui_music_browser_model_t *model)
+{
+    const eq_ui_theme_t *t = theme();
+
+    if (!model) {
+        return;
+    }
+    if (model->bound_count) {
+        *model->bound_count = 0;
+    }
+
+    draw_panel(52.0f, 74.0f, 292.0f, 406.0f, mix_color(t->row, t->bg_mid, 1, 5));
+    draw_icon_cell(198.0f, 178.0f, PLAYER_ICON_FOLDER, ICON_VARIANT_NORMAL, 1.75f, C(255, 255, 255, 255));
+    draw_text_fit(78.0f, 304.0f, TEXT_SIZE, t->text, "Choose music", 238);
+    draw_text_fit(78.0f, 333.0f, TEXT_SIZE, t->subtext, "Open folders or play a song", 238);
+    draw_text_fit(78.0f, 402.0f, TEXT_SIZE, t->subtext, "Current folder", 238);
+    draw_text_fit(78.0f, 431.0f, TEXT_SIZE, t->text,
+                  model->path && model->path[0] ? model->path : "Storage roots",
+                  238);
+
+    draw_panel(370.0f, 74.0f, 538.0f, 48.0f, mix_color(t->row, t->bg_bottom, 1, 4));
+    draw_text_fit(394.0f, 105.0f, TEXT_SIZE, t->text,
+                  model->path && model->path[0] ? model->path : "Pick a storage device",
+                  480);
+
+    if (model->entry_count <= 0) {
+        draw_panel(370.0f, 144.0f, 538.0f, 92.0f, mix_color(t->row, t->bg_bottom, 1, 3));
+        draw_text_fit(394.0f, 181.0f, TEXT_SIZE, t->text, "No music found here", 480);
+        draw_text_fit(394.0f, 211.0f, TEXT_SIZE, t->subtext, "Try another folder or storage device", 480);
+        return;
+    }
+
+    for (int i = 0; i < model->entry_count; ++i) {
+        const eq_ui_music_browser_entry_t *entry = &model->entries[i];
+        draw_music_action_row(370.0f,
+                              144.0f + i * 48.0f,
+                              538.0f,
+                              45.0f,
+                              entry->row_index == model->selected_row,
+                              entry->row_index,
+                              entry->icon,
+                              entry->label,
+                              entry->description,
+                              entry->value,
+                              entry->kind,
+                              model->bounds,
+                              model->max_bounds,
+                              model->bound_count);
     }
 }
 

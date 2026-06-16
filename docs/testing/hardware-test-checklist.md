@@ -21,7 +21,7 @@ For devs: host tests do not prove kernel audio timing, so real hardware still ge
 
 ## App UI
 
-- Move through every menu with D-pad and buttons.
+- Move through every menu with D-pad, left stick, and buttons.
 - Use touch on a few rows and sliders.
 - Check that the Vita back button backs out through screens and exits only from the main menu.
 - Change theme and reopen the app to confirm the theme sticks.
@@ -32,6 +32,19 @@ For devs: host tests do not prove kernel audio timing, so real hardware still ge
 - Load `MOD Switch`.
 - Edit Simple EQ, save to a preset slot, reopen, and confirm values are still there.
 - Edit Advanced EQ, save to a preset slot, reopen, and confirm values are still there.
+
+## Music Preview
+
+- Put one `OGG`, `MP3`, or 16-bit PCM `WAV` file on the Vita, such as `ux0:/music/test.ogg`.
+- Open `Music Preview`.
+- Use the `ux0:music/` shortcut if the file is there, or browse to the file manually.
+- From a storage root like `ux0:` or `ur0:`, press Circle and confirm it returns to the storage list before returning to Music Preview.
+- Play the file.
+- Pause, resume, stop, toggle loop, and change preview volume.
+- Confirm preview volume starts at `100%`.
+- Adjust Simple EQ and Advanced EQ while the preview is playing.
+- Exit EQVita while preview audio is playing and confirm audio stops cleanly.
+- Reopen EQVita and check `ur0:data/eqvita/app.log` for any `preview: open-failed` or `preview: state=Error` lines.
 
 ## Output Modes
 

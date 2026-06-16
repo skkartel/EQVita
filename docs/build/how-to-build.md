@@ -87,6 +87,19 @@ ctest --test-dir build-host --output-on-failure
 
 These cover shared ABI/preset validation, DSP behavior, sparse audio-port tracking, app persistence, and UI source checks. They do not replace hardware testing.
 
+## App Media Preview Support
+
+The app links VitaSDK audio/file APIs plus decoder libraries for Music Preview:
+
+- `SceAudio_stub`
+- `SceAudiodec_stub`
+- `SceAppMgr_stub`
+- `SceIofilemgr_stub`
+- `vorbisfile`, `vorbis`, `ogg`
+- `mpg123`
+
+The VPK should not include any test songs. Users choose their own `OGG`, `MP3`, or `WAV` files from Vita storage.
+
 ## Release Checks
 
 Before sharing a build, run:

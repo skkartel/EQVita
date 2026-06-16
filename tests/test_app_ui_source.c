@@ -250,23 +250,32 @@ static void test_eq_screens_prompt_before_leaving_unsaved_preset(void)
 {
     char path[512];
     char *source;
+    char *ui_source;
     char *loop_cancel;
     char *loop_cancel_end;
 
     snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
     source = read_file(path);
+    snprintf(path, sizeof(path), "%s/app/ui_vita.c", EQVITA_SOURCE_DIR);
+    ui_source = read_file(path);
 
     ASSERT_TRUE(strstr(source, "exit_prompt_active") != NULL);
     ASSERT_TRUE(strstr(source, "Save changes to preset slot") != NULL);
     ASSERT_TRUE(strstr(source, "Save to this slot") != NULL);
     ASSERT_TRUE(strstr(source, "Discard and leave") != NULL);
     ASSERT_TRUE(strstr(source, "Keep editing") != NULL);
+    ASSERT_TRUE(strstr(source, "exit_prompt_icons") != NULL);
+    ASSERT_TRUE(strstr(source, "\"save\"") != NULL);
+    ASSERT_TRUE(strstr(source, "\"reset\"") != NULL);
+    ASSERT_TRUE(strstr(source, "\"tune\"") != NULL);
     ASSERT_TRUE(strstr(source, "static void request_leave_current_screen(void)") != NULL);
     ASSERT_TRUE(strstr(source, "static void discard_eq_edits_and_leave(void)") != NULL);
     ASSERT_TRUE(strstr(source, "eqvita_app_state_current_preset_dirty(&g_app_state)") != NULL);
     ASSERT_TRUE(strstr(source, "eq_ui_draw_confirm_dialog(") != NULL);
     ASSERT_TRUE(strstr(source, "load_preset()") != NULL);
     ASSERT_TRUE(strstr(source, "Unsaved edits discarded") != NULL);
+    ASSERT_TRUE(strstr(ui_source, "draw_icon_symbol((float)x + 50") != NULL);
+    ASSERT_TRUE(strstr(ui_source, "vita2d_draw_fill_circle(check_x, check_y") != NULL);
 
     loop_cancel = strstr(source, "newly & g_cancel_button");
     ASSERT_TRUE(loop_cancel != NULL);
@@ -275,6 +284,229 @@ static void test_eq_screens_prompt_before_leaving_unsaved_preset(void)
 
     ASSERT_TRUE(range_contains(loop_cancel, loop_cancel_end, "request_leave_current_screen()"));
     ASSERT_TRUE(!range_contains(loop_cancel, loop_cancel_end, "change_screen(SCREEN_HOME)"));
+
+    free(source);
+    free(ui_source);
+}
+
+static void test_music_preview_screen_is_wired_into_app_ui(void)
+{
+    char path[512];
+    char *source;
+
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    source = read_file(path);
+
+    ASSERT_TRUE(strstr(source, "SCREEN_MUSIC") != NULL);
+    ASSERT_TRUE(strstr(source, "SCREEN_MUSIC_BROWSER") != NULL);
+    ASSERT_TRUE(strstr(source, "Music Preview") != NULL);
+    ASSERT_TRUE(strstr(source, "Play a song while tuning EQ") != NULL);
+    ASSERT_TRUE(strstr(source, "Choose file") != NULL);
+    ASSERT_TRUE(strstr(source, "Play / Pause") != NULL);
+    ASSERT_TRUE(strstr(source, "Stop") != NULL);
+    ASSERT_TRUE(strstr(source, "Loop") != NULL);
+    ASSERT_TRUE(strstr(source, "eqvita_media_player_shutdown(&g_media_player)") != NULL);
+
+    free(source);
+}
+
+static void test_music_preview_uses_custom_player_surfaces(void)
+{
+    char path[512];
+    char *main_source;
+    char *ui_header;
+    char *ui_source;
+    char *render_fn;
+    char *render_end;
+
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    main_source = read_file(path);
+    snprintf(path, sizeof(path), "%s/app/ui_vita.h", EQVITA_SOURCE_DIR);
+    ui_header = read_file(path);
+    snprintf(path, sizeof(path), "%s/app/ui_vita.c", EQVITA_SOURCE_DIR);
+    ui_source = read_file(path);
+
+    ASSERT_TRUE(strstr(ui_header, "eq_ui_music_player_model_t") != NULL);
+    ASSERT_TRUE(strstr(ui_header, "eq_ui_music_browser_model_t") != NULL);
+    ASSERT_TRUE(strstr(ui_header, "eq_ui_draw_music_player_deck") != NULL);
+    ASSERT_TRUE(strstr(ui_header, "eq_ui_draw_music_browser_deck") != NULL);
+    ASSERT_TRUE(strstr(ui_source, "void eq_ui_draw_music_player_deck") != NULL);
+    ASSERT_TRUE(strstr(ui_source, "void eq_ui_draw_music_browser_deck") != NULL);
+    ASSERT_TRUE(strstr(main_source, "static void draw_music_player_screen(void)") != NULL);
+    ASSERT_TRUE(strstr(main_source, "static void draw_music_browser_screen(void)") != NULL);
+
+    render_fn = strstr(main_source, "static void render_frame(void)");
+    ASSERT_TRUE(render_fn != NULL);
+    render_end = strstr(render_fn + 1, "static void ");
+    ASSERT_TRUE(render_end != NULL);
+    ASSERT_TRUE(range_contains(render_fn, render_end, "g_screen == SCREEN_MUSIC"));
+    ASSERT_TRUE(range_contains(render_fn, render_end, "draw_music_player_screen()"));
+    ASSERT_TRUE(range_contains(render_fn, render_end, "g_screen == SCREEN_MUSIC_BROWSER"));
+    ASSERT_TRUE(range_contains(render_fn, render_end, "draw_music_browser_screen()"));
+    ASSERT_TRUE(range_contains(render_fn, render_end, "draw_current_rows()"));
+
+    free(main_source);
+    free(ui_header);
+    free(ui_source);
+}
+
+static void test_music_preview_keeps_actions_not_metadata_rows(void)
+{
+    char path[512];
+    char *source;
+
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    source = read_file(path);
+
+    ASSERT_TRUE(strstr(source, "#define MUSIC_ROW_COUNT 5") != NULL);
+    ASSERT_TRUE(strstr(source, "#define MUSIC_ROW_FILE") == NULL);
+    ASSERT_TRUE(strstr(source, "#define MUSIC_ROW_FORMAT") == NULL);
+    ASSERT_TRUE(strstr(source, "#define MUSIC_ROW_RATE") == NULL);
+    ASSERT_TRUE(strstr(source, "MUSIC_ROW_FILE") == NULL);
+    ASSERT_TRUE(strstr(source, "MUSIC_ROW_FORMAT") == NULL);
+    ASSERT_TRUE(strstr(source, "MUSIC_ROW_RATE") == NULL);
+
+    free(source);
+}
+
+static void test_music_browser_copies_selected_path_before_opening(void)
+{
+    char path[512];
+    char *source;
+    char *browser_case;
+    char *browser_case_end;
+
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    source = read_file(path);
+
+    ASSERT_TRUE(strstr(source, "eqvita_media_browser_read_roots(&g_media_listing)") != NULL);
+
+    browser_case = strstr(source, "static void activate_current(void)");
+    ASSERT_TRUE(browser_case != NULL);
+    browser_case = strstr(browser_case, "case SCREEN_MUSIC_BROWSER:");
+    ASSERT_TRUE(browser_case != NULL);
+    browser_case_end = strstr(browser_case + 1, "case SCREEN_THEMES:");
+    ASSERT_TRUE(browser_case_end != NULL);
+
+    ASSERT_TRUE(range_contains(browser_case, browser_case_end, "char next_path[EQVITA_MEDIA_MAX_PATH]"));
+    ASSERT_TRUE(range_contains(browser_case, browser_case_end, "snprintf(next_path, sizeof(next_path), \"%s\", entry->path)"));
+    ASSERT_TRUE(range_contains(browser_case, browser_case_end, "media_player_play_selected(next_path)"));
+    ASSERT_TRUE(range_contains(browser_case, browser_case_end, "open_music_browser_path(next_path)"));
+
+    free(source);
+}
+
+static void test_music_browser_cancel_goes_to_parent_before_player(void)
+{
+    char path[512];
+    char *source;
+    char *cancel_branch;
+    char *cancel_branch_end;
+
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    source = read_file(path);
+
+    ASSERT_TRUE(strstr(source, "static void leave_music_browser(void)") != NULL);
+
+    cancel_branch = strstr(source, "newly & g_cancel_button");
+    ASSERT_TRUE(cancel_branch != NULL);
+    cancel_branch = strstr(cancel_branch, "if (g_screen == SCREEN_MUSIC_BROWSER)");
+    ASSERT_TRUE(cancel_branch != NULL);
+    cancel_branch_end = strstr(cancel_branch + 1, "continue;");
+    ASSERT_TRUE(cancel_branch_end != NULL);
+    cancel_branch_end += strlen("continue;");
+
+    ASSERT_TRUE(range_contains(cancel_branch, cancel_branch_end, "leave_music_browser()"));
+    ASSERT_TRUE(!range_contains(cancel_branch, cancel_branch_end, "change_screen(SCREEN_MUSIC)"));
+    ASSERT_TRUE(strstr(source, "eqvita_media_browser_is_root_path(g_media_listing.path)") != NULL);
+    ASSERT_TRUE(strstr(source, "open_music_browser_roots()") != NULL);
+
+    free(source);
+}
+
+static void test_media_browser_builds_listing_before_swapping(void)
+{
+    char path[512];
+    char *source;
+
+    snprintf(path, sizeof(path), "%s/app/media_browser.c", EQVITA_SOURCE_DIR);
+    source = read_file(path);
+
+    ASSERT_TRUE(strstr(source, "int eqvita_media_browser_read_roots") != NULL);
+    ASSERT_TRUE(strstr(source, "sceIoGetstat") != NULL);
+    ASSERT_TRUE(strstr(source, "eqvita_media_listing_t next") != NULL);
+    ASSERT_TRUE(strstr(source, "fd = sceIoDopen(open_path)") != NULL);
+    ASSERT_TRUE(strstr(source, "*listing = next") != NULL);
+
+    free(source);
+}
+
+static void test_music_preview_reduces_main_loop_polling_pressure(void)
+{
+    char path[512];
+    char *source;
+    char *status_fn;
+    char *status_end;
+    char *diag_fn;
+    char *diag_end;
+    char *loop;
+    char *loop_end;
+
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    source = read_file(path);
+
+    ASSERT_TRUE(strstr(source, "preview_is_busy") != NULL);
+    ASSERT_TRUE(strstr(source, "STATUS_LOG_INTERVAL_US") != NULL);
+    ASSERT_TRUE(strstr(source, "STATUS_LOG_PREVIEW_INTERVAL_US") != NULL);
+    ASSERT_TRUE(strstr(source, "DIAGNOSTIC_DRAIN_INTERVAL_US") != NULL);
+    ASSERT_TRUE(strstr(source, "DIAGNOSTIC_DRAIN_PREVIEW_INTERVAL_US") != NULL);
+
+    status_fn = strstr(source, "static void maybe_log_status(void)");
+    ASSERT_TRUE(status_fn != NULL);
+    status_end = strstr(status_fn + 1, "static void ");
+    ASSERT_TRUE(status_end != NULL);
+    ASSERT_TRUE(range_contains(status_fn, status_end, "sceKernelGetProcessTimeLow()"));
+    ASSERT_TRUE(range_contains(status_fn, status_end, "preview_is_busy()"));
+
+    diag_fn = strstr(source, "static void maybe_log_diagnostics(void)");
+    ASSERT_TRUE(diag_fn != NULL);
+    diag_end = strstr(diag_fn + 1, "static void ");
+    ASSERT_TRUE(diag_end != NULL);
+    ASSERT_TRUE(range_contains(diag_fn, diag_end, "preview_is_busy()"));
+    ASSERT_TRUE(range_contains(diag_fn, diag_end, "events_to_log"));
+
+    loop = strstr(source, "while (1) {");
+    ASSERT_TRUE(loop != NULL);
+    loop_end = strstr(loop, "eqvita_media_player_shutdown(&g_media_player)");
+    ASSERT_TRUE(loop_end != NULL);
+    ASSERT_TRUE(range_contains(loop, loop_end, "sceKernelDelayThread(1000)"));
+
+    free(source);
+}
+
+static void test_left_stick_navigation_uses_button_flow(void)
+{
+    char path[512];
+    char *source;
+    char *loop;
+    char *loop_end;
+
+    snprintf(path, sizeof(path), "%s/app/main.c", EQVITA_SOURCE_DIR);
+    source = read_file(path);
+
+    ASSERT_TRUE(strstr(source, "ANALOG_NAV_DEADZONE") != NULL);
+    ASSERT_TRUE(strstr(source, "static uint32_t analog_navigation_buttons") != NULL);
+    ASSERT_TRUE(strstr(source, "pad->lx") != NULL);
+    ASSERT_TRUE(strstr(source, "pad->ly") != NULL);
+    ASSERT_TRUE(strstr(source, "sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG)") != NULL);
+
+    loop = strstr(source, "while (1) {");
+    ASSERT_TRUE(loop != NULL);
+    loop_end = strstr(loop, "eqvita_media_player_shutdown(&g_media_player)");
+    ASSERT_TRUE(loop_end != NULL);
+    ASSERT_TRUE(range_contains(loop, loop_end, "pad.buttons | analog_navigation_buttons(&pad)"));
+    ASSERT_TRUE(range_contains(loop, loop_end, "newly = (~last_buttons) & buttons"));
+    ASSERT_TRUE(range_contains(loop, loop_end, "held = buttons"));
 
     free(source);
 }
@@ -292,5 +524,13 @@ int main(void)
     test_builtin_presets_persist_active_slot_after_apply();
     test_reset_defaults_restores_safe_headroom();
     test_eq_screens_prompt_before_leaving_unsaved_preset();
+    test_music_preview_screen_is_wired_into_app_ui();
+    test_music_preview_uses_custom_player_surfaces();
+    test_music_preview_keeps_actions_not_metadata_rows();
+    test_music_browser_copies_selected_path_before_opening();
+    test_music_browser_cancel_goes_to_parent_before_player();
+    test_media_browser_builds_listing_before_swapping();
+    test_music_preview_reduces_main_loop_polling_pressure();
+    test_left_stick_navigation_uses_button_flow();
     return 0;
 }
