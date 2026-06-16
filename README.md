@@ -1,39 +1,183 @@
-# EQVita
+<p align="center">
+  <img src="media/EQVITA.png" alt="EQVita banner" width="100%">
+</p>
 
-EQVita is a PS Vita system audio equalizer.
+---
 
-It has two parts:
+<p align="center">
+  A PS Vita system-wide equalizer for speakers, wired headphones, and Bluetooth.
+</p>
 
-- `eq_speaker.skprx` - taiHEN kernel plugin that hooks Vita audio output.
-- `EQVita.vpk` - companion app for presets, tuning, themes, status, and logs.
+<p align="center">
+  <a href="https://github.com/shev0k/EQVita/actions/workflows/host-tests.yml"><img alt="CI" src="https://github.com/shev0k/EQVita/actions/workflows/host-tests.yml/badge.svg"></a>
+  <a href="https://github.com/shev0k/EQVita/releases"><img alt="Release" src="https://img.shields.io/github/v/release/shev0k/EQVita?sort=semver"></a>
+  <a href="https://www.rinnegatamante.eu/vitadb/#/info/1353"><img alt="VitaDB" src="https://img.shields.io/badge/VitaDB-EQVita-cc0033"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg"></a>
+  <img alt="Platform" src="https://img.shields.io/badge/platform-PS%20Vita-003791">
+  <img alt="VitaSDK" src="https://img.shields.io/badge/build-VitaSDK-2ea44f">
+</p>
+
+EQVita is a hobby homebrew project made to give the Vita a richer sound. It ships as a kernel plugin plus a small Vita app.
+
+Install it, open the app, pick a preset, and make the Vita sound less flat.
+Nerd version: the plugin hooks `sceAudioOutOutput`, while the app handles presets, route hints, themes, logs, and boot state.
 
 Current app/plugin ABI: `1.13.0`.
 
-## What It Does
+## Official Builds
 
-- 10-band graphic EQ: 31 Hz through 16 kHz.
-- Simple EQ mode for bass, mids, and treble.
-- Advanced EQ mode for every band.
-- Preset slots with validated `.eqvp` files.
+Only builds from [shev0k/EQVita](https://github.com/shev0k/EQVita) are official.
+
+If someone reuploads EQVita somewhere else, treat it as unofficial. Compare release checksums when available, and do not install random VPK/plugin reuploads from people you do not trust.
+
+This project is licensed under `GPL-3.0-or-later`, but a license does not magically make every fork or reupload safe.
+
+## App Preview
+
+A quick walk through the app, slow enough to actually read instead of getting speedrun jumpscared.
+
+<p align="center">
+  <img src="media/app-flow.png" alt="EQVita app flow preview" width="100%">
+</p>
+
+## Themes
+
+The theme switcher exists because staring at EQ sliders should at least look clean.
+
+<p align="center">
+  <img src="media/themes.png" alt="EQVita theme preview" width="100%">
+</p>
+
+## Features
+
+- 10-band graphic EQ from `31 Hz` to `16 kHz`.
+- Simple EQ mode for bass, mids, treble, and preamp.
+- Advanced EQ mode for every band and preamp.
 - Built-in `STOCK Depth` and `MOD Switch` presets.
-- Speaker-only mode, or all outputs mode for wired/Bluetooth too.
-- Optional bass guard / HPF.
+- Preset slots with save/load support.
+- Speaker-only mode or all-output mode for wired/Bluetooth too.
+- Optional HPF (Bass guard), which cuts very low rumble.
 - Safe, Loud, and Direct headroom modes.
-- Vita-style UI with themes. `Crimson Vita` is the default.
-- Live telemetry for route, bypass reason, clipping, peaks, ports, and hook timing.
+- Vita-style app UI with themes. `Crimson Vita` is the default.
 - Boot persistence through `ur0:data/eqvita/boot.eqbs`.
 - App log at `ur0:data/eqvita/app.log`.
 
-## Repo Layout
+## Download And Install
 
-- `plugin/` - kernel plugin
-- `app/` - Vita companion app and launcher assets
-- `common/` - shared ABI, preset, and boot-state helpers
-- `tests/` - host-side regression tests
-- `docs/` - build and hardware test notes
-- `scripts/` - Windows/WSL build helpers
+Download the latest release from [GitHub Releases](https://github.com/shev0k/EQVita/releases).
 
-## Build
+You need both files from the same release:
+
+- `EQVita.vpk`
+- `eq_speaker.skprx`
+
+Install steps:
+
+1. Copy `eq_speaker.skprx` to `ur0:tai/`.
+2. Add it under `*KERNEL` in `ur0:tai/config.txt`:
+
+   ```text
+   *KERNEL
+   ur0:tai/eq_speaker.skprx
+   ```
+
+3. Reboot the Vita.
+4. Install `EQVita.vpk`.
+5. Open EQVita and pick a preset.
+
+Keep the app and plugin from the same release. Mixed versions can fail or behave weirdly.
+
+## Controls
+
+| Control | Action |
+| --- | --- |
+| D-pad / left stick | Move through rows |
+| Left / Right | Adjust selected value |
+| L / R | Bigger EQ value changes |
+| Cross | Select, toggle, or activate |
+| Circle | Back / exit from main menu |
+| Start | Quick EQ on/off |
+| Triangle | Help |
+| Touch | Tap rows or drag lists |
+
+EQVita follows the Vita enter-button setting for Cross/Circle.
+
+## Presets And Data
+
+EQVita stores data in:
+
+```text
+ur0:data/eqvita/
+```
+
+Files you may see there:
+
+- `preset0.eqvp`, `preset1.eqvp`, `preset2.eqvp` - preset slots.
+- `boot.eqbs` - boot state.
+- `theme.cfg` - selected app theme.
+- `app.log` - useful log for bug reports.
+
+There are three preset slots. EQ changes apply live, and saving writes the current settings into the selected slot.
+
+The built-in presets are starting points. Applying `STOCK Depth` or `MOD Switch` saves that preset into the active slot and startup state.
+
+The boot state is what lets the plugin load your saved sound after reboot, before you open the app again.
+
+Old raw `preset%d.bin` files are imported read-only when a matching `.eqvp` file does not exist.
+
+## Output Modes
+
+`Vita speakers` mode applies EQ only to the Vita speakers.
+
+`All outputs` mode also allows wired headphones and Bluetooth output.
+
+If EQ is bypassed, the app tries to show why. Common reasons are:
+
+- EQ is turned off.
+- The selected output mode does not match the current route.
+- The output port is unknown or busy.
+- The audio format is unsupported.
+- The app and plugin ABI do not match.
+
+Short bypasses can happen when the Vita opens, closes, or reconfigures audio ports. If it is quick and does not sound bad, it is usually fine.
+
+## Troubleshooting
+
+<details>
+<summary><strong>I changed EQ but hear no difference.</strong></summary>
+
+Check that EQ is on, the output mode matches what you are using, and the app/plugin versions match.
+
+</details>
+
+<details>
+<summary><strong>I hear crackle, static, or distortion.</strong></summary>
+
+Try a safer preset or lower preamp first. If it still happens, save `ur0:data/eqvita/app.log` and describe what was playing.
+
+</details>
+
+<details>
+<summary><strong>The app says ABI mismatch.</strong></summary>
+
+Install the VPK and plugin from the same release.
+
+</details>
+
+<details>
+<summary><strong>Where is the log?</strong></summary>
+
+```text
+ur0:data/eqvita/app.log
+```
+
+Important: the app writes fresh status/log data when EQVita opens. If something weird happens in a game or on the home screen, open EQVita once before sending the log.
+
+</details>
+
+For deeper testing, see [docs/testing/hardware-test-checklist.md](docs/testing/hardware-test-checklist.md), [docs/audio/audio-stability.md](docs/audio/audio-stability.md), and [docs/audio/known-limits.md](docs/audio/known-limits.md).
+
+## Build From Source
 
 Install [VitaSDK](https://vitasdk.org/) first.
 
@@ -46,10 +190,7 @@ On Windows, use WSL:
 From WSL/Linux:
 
 ```bash
-export VITASDK=/usr/local/vitasdk
-export PATH="$VITASDK/bin:$PATH"
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --parallel
+EQVITA_ARTIFACT_DIR=build EQVITA_BUILD_TYPE=Release bash scripts/build-wsl.sh
 ```
 
 Build outputs:
@@ -60,83 +201,54 @@ Build outputs:
 Host tests:
 
 ```bash
-cmake -S . -B build-host -DEQVITA_HOST_TESTS=ON
-cmake --build build-host
-ctest --test-dir build-host --output-on-failure
+EQVITA_BUILD_TYPE=Debug bash scripts/test-host-wsl.sh
 ```
 
-Release hygiene checks:
+Release checks:
 
 ```powershell
 .\scripts\check-release-hygiene.ps1
 ```
 
-GitHub Actions runs host tests normally and builds Vita artifacts inside the official pinned VitaSDK Docker image.
+More detail: [docs/build/how-to-build.md](docs/build/how-to-build.md).
 
-## Install On Vita
+## Repo Layout
 
-1. Copy `build/plugin/eq_speaker.skprx` to `ur0:tai/`.
-2. Add it under `*KERNEL` in `ur0:tai/config.txt`:
-
-   ```text
-   *KERNEL
-   ur0:tai/eq_speaker.skprx
-   ```
-
-3. Reboot the Vita.
-4. Install `build/app/EQVita.vpk`.
-5. Open EQVita and tune from the app.
-
-The app and plugin must both be from the same release line. For this build, keep them on ABI `1.13.x`.
-
-## Controls
-
-- D-pad: move through rows.
-- Left / right: change the selected value.
-- L / R: coarse EQ changes.
-- Cross: select, toggle, or activate.
-- Back button: backs out of screens and exits from the main menu. EQVita follows the Vita enter-button setting for Cross/Circle.
-- Start: quick EQ on/off.
-- Triangle: Help.
-- Touch: tap rows or drag lists.
-
-## Presets And Data
-
-EQVita stores its data in `ur0:data/eqvita/`.
-
-- Presets: `preset0.eqvp`, `preset1.eqvp`, `preset2.eqvp`
-- Boot state: `boot.eqbs`
-- Theme: `theme.cfg`
-- Log: `app.log`
-
-Old raw `preset%d.bin` files are imported read-only when a matching `.eqvp` slot does not exist.
-
-If you report an issue, share `ur0:data/eqvita/app.log` when possible.
-
-## Route And Bypass Notes
-
-The app detects speakers, wired audio, and Bluetooth through AVConfig and sends that route hint to the plugin.
-
-- `Vita speakers` mode applies EQ only to Vita speakers.
-- `All outputs` mode also allows wired and Bluetooth output.
-- If EQ is bypassed, the app shows why: disabled, wrong route, unknown output, invalid port, large buffer, copy failure, unsupported format, or audio busy.
-
-At boot, the plugin loads the saved boot state before the app starts. Opening the app refreshes the route hint and status.
+- `plugin/` - kernel plugin and audio hook code.
+- `app/` - Vita companion app, UI, themes, LiveArea assets, and persistence.
+- `common/` - shared app/plugin ABI, presets, and boot-state helpers.
+- `tests/` - host-side regression tests.
+- `docs/` - indexed build, release, audio, and hardware testing notes.
+- `scripts/` - Windows/WSL helper scripts.
 
 ## Testing
 
-Run host tests before every commit. Before publishing binaries, test on real Vita hardware with:
+Run host tests before every commit.
 
-[docs/hardware-test-checklist.md](docs/hardware-test-checklist.md)
+Before publishing binaries, test on real Vita hardware:
 
-Use this release checklist before tagging or sharing a build:
+- speakers;
+- wired headphones if available;
+- Bluetooth if available;
+- home screen sounds;
+- games during loading screens;
+- suspend/resume;
+- reboot with the plugin enabled.
 
-[docs/release-checklist.md](docs/release-checklist.md)
+Kernel audio hooks can pass host tests and still behave differently on a real Vita. That is just how this stuff goes.
 
-Kernel audio hooks can pass host tests and still behave differently on real hardware, so hardware testing matters.
+Use [docs/testing/hardware-test-checklist.md](docs/testing/hardware-test-checklist.md) before tagging or sharing builds.
+
+## License
+
+EQVita is licensed under the GNU General Public License, version 3 or later.
+
+See [LICENSE](LICENSE).
+
+Third-party asset notes live in [app/assets/THIRD_PARTY_NOTICES.md](app/assets/THIRD_PARTY_NOTICES.md).
 
 ## Credits
 
 Created by shevoK.
 
-Built with VitaSDK, taiHEN, vita2d, and Feather Icons for the in-app icon sheets.
+Built with VitaSDK, taiHEN, vita2d, and Feather Icons.

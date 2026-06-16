@@ -2,6 +2,7 @@
 param(
     [string]$BuildDir = "build",
     [string]$BuildType = "Release",
+    [string]$Distro = "Ubuntu",
     [switch]$Clean
 )
 
@@ -27,33 +28,30 @@ if ($relativeBuildDir -notmatch $allowedBuildDirPattern) {
     throw "BuildDir must be a generated build directory such as build or build-vita."
 }
 
+$Distro = $Distro.Trim()
+if ([string]::IsNullOrWhiteSpace($Distro)) {
+    throw "Distro must name the WSL distro to use."
+}
+
+& wsl.exe -d $Distro -e true
+if ($LASTEXITCODE -ne 0) {
+    throw "WSL distro '$Distro' is not available. Install it or pass -Distro with the correct distro name."
+}
+
 $repoRootForWsl = $repoRoot -replace '\\', '/'
-$wslRepoRoot = (& wsl.exe --exec wslpath -a $repoRootForWsl).Trim()
+$wslRepoRoot = (& wsl.exe -d $Distro -e wslpath -a $repoRootForWsl).Trim()
 if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($wslRepoRoot)) {
     throw "Unable to resolve repository path in WSL. Is WSL installed?"
 }
 
 $cleanFlag = if ($Clean) { "1" } else { "0" }
 
-$bash = @'
-set -euo pipefail
-export VITASDK=/usr/local/vitasdk
-export PATH="$VITASDK/bin:$PATH"
+$wslScript = (& wsl.exe -d $Distro -e wslpath -a (($PSScriptRoot + "\build-wsl.sh") -replace '\\', '/')).Trim()
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($wslScript)) {
+    throw "Unable to resolve scripts/build-wsl.sh in WSL."
+}
 
-cd "$EQVITA_REPO_ROOT"
+& wsl.exe -d $Distro -e env "EQVITA_REPO_ROOT=$wslRepoRoot" "EQVITA_ARTIFACT_DIR=$relativeBuildDir" "EQVITA_BUILD_TYPE=$BuildType" "EQVITA_CLEAN=$cleanFlag" bash "$wslScript"
+$exitCode = $LASTEXITCODE
 
-if [ ! -f "$VITASDK/share/vita.toolchain.cmake" ]; then
-  echo "VitaSDK not found at $VITASDK. Install it from https://vitasdk.org/ first." >&2
-  exit 1
-fi
-
-if [ "$EQVITA_CLEAN" = "1" ]; then
-  rm -rf -- "$EQVITA_BUILD_DIR"
-fi
-
-cmake -S . -B "$EQVITA_BUILD_DIR" -DCMAKE_BUILD_TYPE="$EQVITA_BUILD_TYPE"
-cmake --build "$EQVITA_BUILD_DIR"
-'@
-
-& wsl.exe --exec env "EQVITA_REPO_ROOT=$wslRepoRoot" "EQVITA_BUILD_DIR=$relativeBuildDir" "EQVITA_BUILD_TYPE=$BuildType" "EQVITA_CLEAN=$cleanFlag" bash -lc $bash
-exit $LASTEXITCODE
+exit $exitCode

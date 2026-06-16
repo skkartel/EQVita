@@ -13,3 +13,4 @@ EQSpeaker:
         - EqGetVersion
         - EqSetControl
         - EqGetStatus
+        - EqDrainDiagnostics

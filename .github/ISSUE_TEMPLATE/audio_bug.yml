@@ -1,0 +1,81 @@
+name: Audio bug
+description: Crackle, distortion, bypass, route, or EQ behavior issue.
+title: "[audio] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing EQVita. Audio bugs need context, otherwise it is mostly guesswork.
+
+        If the issue happened in a game or on the home screen, open EQVita once before copying the log. The app writes fresh status data when it launches.
+  - type: input
+    id: version
+    attributes:
+      label: EQVita version
+      placeholder: "v1.13.0"
+    validations:
+      required: true
+  - type: input
+    id: vita_model
+    attributes:
+      label: Vita model and firmware
+      placeholder: "Vita 1000, 3.65 Enso"
+    validations:
+      required: true
+  - type: textarea
+    id: plugins
+    attributes:
+      label: Plugin list
+      description: Paste relevant `ur0:tai/config.txt` entries if possible.
+      placeholder: |
+        *KERNEL
+        ur0:tai/eq_speaker.skprx
+    validations:
+      required: false
+  - type: dropdown
+    id: output
+    attributes:
+      label: Output used
+      options:
+        - Vita speakers
+        - Wired headphones
+        - Bluetooth
+        - Multiple / not sure
+    validations:
+      required: true
+  - type: input
+    id: preset
+    attributes:
+      label: Preset and preamp
+      placeholder: "MOD Switch, -6.5 dB"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: What happened?
+      description: Include what was playing, what app/game was open, and when the issue started.
+      placeholder: |
+        1. Rebooted Vita
+        2. Opened ...
+        3. Heard ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: app.log
+      description: Paste or attach `ur0:data/eqvita/app.log`.
+      placeholder: "Attach app.log if it is long."
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Quick checks
+      options:
+        - label: I installed `EQVita.vpk` and `eq_speaker.skprx` from the same release.
+          required: true
+        - label: I opened EQVita once after the issue happened before copying the log.
+          required: true

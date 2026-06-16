@@ -1,0 +1,43 @@
+name: App bug
+description: UI, preset saving, theme, install, or non-audio app issue.
+title: "[app] "
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: EQVita version
+      placeholder: "v1.13.0"
+    validations:
+      required: true
+  - type: input
+    id: vita
+    attributes:
+      label: Vita model and firmware
+      placeholder: "Vita 2000, 3.65 Enso"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      placeholder: "The app crashed when..."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open EQVita
+        2. Go to ...
+        3. Press ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: app.log
+      description: If useful, paste or attach `ur0:data/eqvita/app.log`.
+    validations:
+      required: false

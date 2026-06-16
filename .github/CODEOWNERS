@@ -1,0 +1,19 @@
+# Default owner.
+* @shev0k
+
+# Audio-sensitive code.
+/plugin/ @shev0k
+/common/ @shev0k
+/tests/test_dsp.c @shev0k
+/tests/test_port_registry.c @shev0k
+/tests/test_port_state.c @shev0k
+
+# Vita app, UI, and release assets.
+/app/ @shev0k
+/media/ @shev0k
+
+# Release and CI files.
+/.github/ @shev0k
+/scripts/ @shev0k
+/docs/release/release-checklist.md @shev0k
+/docs/release/release-notes-template.md @shev0k

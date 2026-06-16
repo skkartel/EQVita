@@ -99,3 +99,13 @@ target_compile_definitions(test_app_ui_source PRIVATE
 )
 
 add_test(NAME app_ui_source COMMAND test_app_ui_source)
+
+add_executable(test_plugin_source
+  test_plugin_source.c
+)
+
+target_compile_definitions(test_plugin_source PRIVATE
+  EQVITA_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
+add_test(NAME plugin_source COMMAND test_plugin_source)

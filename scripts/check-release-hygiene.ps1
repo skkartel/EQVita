@@ -143,7 +143,7 @@ function Assert-IndexedPng {
 function Assert-MarkdownLinks {
     $markdownFiles = @(
         Get-Item -LiteralPath (Join-Path $RepoRoot 'README.md')
-    ) + @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'docs') -Filter '*.md' -File)
+    ) + @(Get-ChildItem -LiteralPath (Join-Path $RepoRoot 'docs') -Filter '*.md' -File -Recurse)
 
     foreach ($file in $markdownFiles) {
         $text = Get-Content -LiteralPath $file.FullName -Raw
@@ -224,4 +224,3 @@ Assert-IndexedPng 'app/sce_sys/livearea/contents/startup.png' 280 158
 Assert-MarkdownLinks
 
 Write-Host "Release hygiene checks passed for EQVita $fullVersion"
-

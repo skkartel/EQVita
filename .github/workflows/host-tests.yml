@@ -8,7 +8,7 @@ jobs:
   host-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Configure
         run: cmake -S . -B build-host -DEQVITA_HOST_TESTS=ON -DCMAKE_BUILD_TYPE=Debug
@@ -23,6 +23,9 @@ jobs:
         shell: pwsh
         run: ./scripts/test-build-wsl-validation.ps1
 
+      - name: WSL shell build script guard tests
+        run: bash scripts/test-wsl-shell-validation.sh
+
       - name: Release hygiene checks
         shell: pwsh
         run: ./scripts/check-release-hygiene.ps1
@@ -30,7 +33,7 @@ jobs:
   vita-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - name: Build Vita artifacts
         run: |

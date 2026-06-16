@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest a small improvement or quality-of-life idea.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      placeholder: "It would be nice if..."
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why would it help?
+      placeholder: "This would make it easier to..."
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Extra notes
+      description: Screenshots, examples, or similar apps are helpful.
+    validations:
+      required: false

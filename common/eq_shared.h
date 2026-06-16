@@ -25,10 +25,14 @@
 #define EQ_PRESET_BAND_COUNT EQ_BANDS
 #define EQ_BOOT_STATE_MAGIC 0x53425145u /* EQBS */
 #define EQ_BOOT_STATE_VERSION 1u
+/* Route hints are persistent advisory state; app route truth is not always live at boot. */
 #define EQ_ROUTE_HINT_MAX_STALE_BUFFERS UINT32_MAX
 #define EQ_HPF_ENABLED_MASK 0x01u
 #define EQ_HEADROOM_MODE_SHIFT 4u
 #define EQ_HEADROOM_MODE_MASK 0x03u
+#define EQ_DIAG_EVENT_VERSION 1u
+#define EQ_DIAG_SNAPSHOT_VERSION 1u
+#define EQ_DIAG_MAX_EVENTS_PER_DRAIN 32u
 
 static const uint32_t eq_band_frequencies[EQ_BANDS] = {
     31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000};
@@ -67,6 +71,24 @@ typedef enum eq_headroom_mode
     EQ_HEADROOM_LOUD = 1,
     EQ_HEADROOM_RAW = 2
 } eq_headroom_mode_t;
+
+typedef enum eq_diag_event_type
+{
+    EQ_DIAG_EVENT_NONE = 0,
+    EQ_DIAG_EVENT_CLIP_BLOCK = 1,
+    EQ_DIAG_EVENT_BYPASS_BLOCK = 2,
+    EQ_DIAG_EVENT_SLOW_BLOCK = 3,
+    EQ_DIAG_EVENT_OUTPUT_ERROR = 4,
+    EQ_DIAG_EVENT_COPY_ERROR = 5,
+    EQ_DIAG_EVENT_DSP_RETARGET = 6,
+    EQ_DIAG_EVENT_PORT_OPEN = 7,
+    EQ_DIAG_EVENT_PORT_SET_CONFIG = 8,
+    EQ_DIAG_EVENT_PORT_RELEASE = 9,
+    EQ_DIAG_EVENT_CONTROL_SET = 10,
+    EQ_DIAG_EVENT_DROPPED_EVENTS = 11,
+    EQ_DIAG_EVENT_ACTIVE_SAMPLE = 12,
+    EQ_DIAG_EVENT_CONFIG_MISMATCH = 13
+} eq_diag_event_type_t;
 
 typedef struct eq_version
 {
@@ -109,7 +131,84 @@ typedef struct eq_status
     uint32_t debug_unknown_port_count;
     uint32_t debug_last_us;
     uint32_t debug_max_us;
+    uint32_t debug_max_port;
+    uint32_t debug_max_len;
+    uint32_t debug_max_sample_rate;
+    uint32_t debug_max_channels;
+    uint32_t debug_max_budget_us;
+    uint32_t debug_max_route;
+    uint32_t debug_max_bypass_reason;
+    int32_t debug_max_clip_count;
+    uint32_t debug_max_stage_control_us;
+    uint32_t debug_max_stage_registry_us;
+    uint32_t debug_max_stage_route_us;
+    uint32_t debug_max_stage_copy_in_us;
+    uint32_t debug_max_stage_retarget_us;
+    uint32_t debug_max_stage_dsp_us;
+    uint32_t debug_max_stage_copy_out_us;
+    uint32_t debug_max_stage_original_us;
+    uint32_t debug_max_stage_status_us;
+    uint32_t debug_last_total_us;
+    uint32_t debug_last_budget_us;
+    int32_t debug_last_margin_us;
+    uint32_t debug_max_total_us;
+    uint32_t debug_max_dsp_us;
+    int32_t debug_min_margin_us;
+    uint32_t debug_min_margin_port;
+    uint32_t debug_min_margin_len;
+    uint32_t debug_min_margin_sample_rate;
+    uint32_t debug_min_margin_channels;
+    uint32_t debug_min_margin_budget_us;
+    uint32_t debug_min_margin_total_us;
+    uint32_t debug_min_margin_route;
+    uint32_t debug_min_margin_bypass_reason;
+    uint32_t debug_min_margin_stage_dsp_us;
+    uint32_t debug_min_margin_stage_original_us;
+    uint32_t debug_min_margin_stage_status_us;
+    int32_t debug_min_margin_len_256_us;
+    int32_t debug_min_margin_len_1024_us;
+    int32_t debug_min_margin_len_2048_us;
 } eq_status_t;
+
+typedef struct eq_diag_event
+{
+    uint32_t version;
+    uint32_t seq;
+    uint32_t type;
+    int32_t port;
+    uint32_t generation;
+    uint32_t dirty_counter;
+    uint32_t len;
+    uint32_t sample_rate;
+    uint32_t elapsed_us;
+    uint32_t budget_us;
+    int32_t ret;
+    int32_t clip_count;
+    int32_t preamp_mdB;
+    int32_t effective_preamp_mdB;
+    int32_t max_boost_mdB;
+    uint16_t input_peak_l;
+    uint16_t input_peak_r;
+    uint16_t output_peak_l;
+    uint16_t output_peak_r;
+    uint8_t channels;
+    uint8_t route;
+    uint8_t reason;
+    uint8_t port_type;
+    uint8_t headroom_mode;
+    uint8_t hpf_enabled;
+    uint8_t flags;
+    uint8_t reserved0;
+} eq_diag_event_t;
+
+typedef struct eq_diag_snapshot
+{
+    uint32_t version;
+    uint32_t count;
+    uint32_t dropped;
+    uint32_t capacity;
+    eq_diag_event_t events[EQ_DIAG_MAX_EVENTS_PER_DRAIN];
+} eq_diag_snapshot_t;
 
 typedef struct eq_shared_block
 {
@@ -154,6 +253,36 @@ static inline uint8_t eq_bool(uint8_t value)
     return value ? 1u : 0u;
 }
 
+static inline uint32_t eq_control_next_dirty_counter(uint32_t current)
+{
+    uint32_t next = current + 1u;
+    return next ? next : 1u;
+}
+
+static inline void eq_status_add_clip_events(eq_status_t *status, int32_t count)
+{
+    if (!status || count <= 0) {
+        return;
+    }
+
+    if (status->clip_events > INT32_MAX - count) {
+        status->clip_events = INT32_MAX;
+    } else {
+        status->clip_events += count;
+    }
+}
+
+static inline void eq_status_increment_u32(volatile uint32_t *counter)
+{
+    if (!counter) {
+        return;
+    }
+
+    if (*counter < UINT32_MAX) {
+        (*counter)++;
+    }
+}
+
 static inline uint8_t eq_control_hpf_enabled(const eq_control_t *ctrl)
 {
     return ctrl ? (ctrl->hpf_enabled & EQ_HPF_ENABLED_MASK) : 0u;
@@ -190,6 +319,56 @@ static inline void eq_control_set_headroom_mode(eq_control_t *ctrl, uint8_t mode
     hpf = eq_control_hpf_enabled(ctrl);
     ctrl->hpf_enabled = (hpf & EQ_HPF_ENABLED_MASK) |
         (uint8_t)(mode << EQ_HEADROOM_MODE_SHIFT);
+}
+
+static inline int32_t eq_control_max_positive_band_mdB(const int32_t *band_mdB)
+{
+    int32_t max_boost = 0;
+
+    if (!band_mdB) {
+        return 0;
+    }
+
+    for (int i = 0; i < EQ_BANDS; ++i) {
+        int32_t gain = eq_clamp_mdB(band_mdB[i]);
+        if (gain > max_boost) {
+            max_boost = gain;
+        }
+    }
+
+    return max_boost;
+}
+
+static inline int32_t eq_control_effective_preamp_mdB(const eq_control_t *ctrl, const int32_t *band_mdB)
+{
+    int32_t effective_preamp;
+    int32_t max_boost;
+    uint8_t headroom_mode;
+
+    if (!ctrl) {
+        return EQ_DEFAULT_PREAMP_MDB;
+    }
+
+    effective_preamp = eq_clamp_mdB(ctrl->preamp_mdB);
+    max_boost = eq_control_max_positive_band_mdB(band_mdB);
+    headroom_mode = eq_control_get_headroom_mode(ctrl);
+
+    if (headroom_mode == EQ_HEADROOM_LOUD) {
+        int32_t makeup = max_boost / 2;
+        if (makeup > 3000) {
+            makeup = 3000;
+        }
+        effective_preamp += makeup;
+    } else if (headroom_mode == EQ_HEADROOM_RAW) {
+        effective_preamp = 0;
+    } else {
+        int32_t safe_preamp = -max_boost;
+        if (effective_preamp > safe_preamp) {
+            effective_preamp = safe_preamp;
+        }
+    }
+
+    return eq_clamp_mdB(effective_preamp);
 }
 
 static inline void eq_control_init_defaults(eq_control_t *ctrl)
@@ -501,4 +680,5 @@ static inline int eq_boot_state_validate(const eq_boot_state_file_t *state)
 
 int EqSetControl(const eq_control_t *ctrl);
 int EqGetStatus(eq_status_t *status);
+int EqDrainDiagnostics(eq_diag_snapshot_t *snapshot);
 void EqGetVersion(eq_version_t *out);

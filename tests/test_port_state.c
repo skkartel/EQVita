@@ -62,10 +62,48 @@ static void test_invalid_modes_are_rejected(void) {
     ASSERT_EQ_U32(cfg.channels, 1);
 }
 
+static void test_documented_lengths_are_enforced(void) {
+    eq_audio_port_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    ASSERT_TRUE(eq_audio_port_open(&cfg, 0, 64, 48000, EQ_AUDIO_MODE_STEREO) == 0);
+    ASSERT_TRUE(eq_audio_port_can_process(&cfg, 4096));
+
+    ASSERT_TRUE(eq_audio_port_open(&cfg, 0, 32, 48000, EQ_AUDIO_MODE_STEREO) < 0);
+    ASSERT_TRUE(eq_audio_port_open(&cfg, 0, 65, 48000, EQ_AUDIO_MODE_STEREO) < 0);
+    ASSERT_TRUE(eq_audio_port_open(&cfg, 0, 65473, 48000, EQ_AUDIO_MODE_STEREO) < 0);
+
+    ASSERT_TRUE(eq_audio_port_open(&cfg, 0, 256, 48000, EQ_AUDIO_MODE_STEREO) == 0);
+    ASSERT_TRUE(eq_audio_port_set_config(&cfg, 65, -1, -1) < 0);
+    ASSERT_EQ_U32(cfg.len, 256);
+}
+
+static void test_documented_sample_rates_are_enforced(void) {
+    eq_audio_port_config_t cfg;
+    static const uint32_t supported[] = {
+        8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000
+    };
+    memset(&cfg, 0, sizeof(cfg));
+
+    for (uint32_t i = 0; i < (uint32_t)(sizeof(supported) / sizeof(supported[0])); ++i) {
+        ASSERT_TRUE(eq_audio_port_open(&cfg, 0, 256, supported[i], EQ_AUDIO_MODE_STEREO) == 0);
+        ASSERT_EQ_U32(cfg.freq, supported[i]);
+    }
+
+    ASSERT_TRUE(eq_audio_port_open(&cfg, 0, 256, 96000, EQ_AUDIO_MODE_STEREO) < 0);
+    ASSERT_TRUE(eq_audio_port_open(&cfg, 0, 256, 12345, EQ_AUDIO_MODE_STEREO) < 0);
+
+    ASSERT_TRUE(eq_audio_port_open(&cfg, 0, 256, 48000, EQ_AUDIO_MODE_STEREO) == 0);
+    ASSERT_TRUE(eq_audio_port_set_config(&cfg, EQ_AUDIO_KEEP_U32, 96000, -1) < 0);
+    ASSERT_EQ_U32(cfg.freq, 48000);
+}
+
 int main(void) {
     test_set_config_minus_one_keeps_existing_values();
     test_unknown_or_oversized_buffers_are_not_processable();
     test_invalid_modes_are_rejected();
+    test_documented_lengths_are_enforced();
+    test_documented_sample_rates_are_enforced();
 
     if (failures) {
         printf("%d port-state failure(s)\n", failures);

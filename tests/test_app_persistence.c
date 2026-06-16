@@ -57,6 +57,23 @@ static void write_file_or_die(const char *path, const void *data, size_t size)
     fclose(f);
 }
 
+static void write_file_with_extra_byte_or_die(const char *path, const void *data, size_t size)
+{
+    static const unsigned char extra = 0x5a;
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        perror(path);
+        exit(2);
+    }
+    if (fwrite(data, 1, size, f) != size ||
+        fwrite(&extra, 1, 1, f) != 1) {
+        perror("fwrite");
+        fclose(f);
+        exit(2);
+    }
+    fclose(f);
+}
+
 static void write_boot_control(const char *dir, const eq_control_t *ctrl)
 {
     char path[256];
@@ -298,6 +315,28 @@ static void test_app_startup_keeps_legacy_boot_state_when_no_active_slot_exists(
     free(dir);
 }
 
+static void test_preset_with_trailing_bytes_is_rejected(void)
+{
+    char *dir = make_temp_dir();
+    char path[256];
+    eq_control_t ctrl;
+    eq_control_t loaded;
+    eq_preset_file_t preset;
+    int legacy_loaded = 0;
+
+    eq_control_init_defaults(&ctrl);
+    ctrl.enabled = 1;
+    ctrl.band_gain_mdB[1] = 3000;
+    eq_preset_build(&preset, &ctrl);
+
+    snprintf(path, sizeof(path), "%s/preset1.eqvp", dir);
+    write_file_with_extra_byte_or_die(path, &preset, sizeof(preset));
+
+    ASSERT_TRUE(eqvita_load_preset(dir, 1, &loaded, &legacy_loaded) < 0);
+    ASSERT_EQ_I32(legacy_loaded, 0);
+    free(dir);
+}
+
 static void test_log_append_rotates_when_cap_is_exceeded(void)
 {
     char *dir = make_temp_dir();
@@ -330,6 +369,7 @@ int main(void)
     test_active_preset_slot_round_trips_and_validates_bounds();
     test_app_startup_prefers_active_slot_preset_over_stale_boot_state();
     test_app_startup_keeps_legacy_boot_state_when_no_active_slot_exists();
+    test_preset_with_trailing_bytes_is_rejected();
     test_log_append_rotates_when_cap_is_exceeded();
     return failures ? 1 : 0;
 }

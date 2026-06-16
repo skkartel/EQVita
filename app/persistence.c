@@ -73,8 +73,16 @@ static int build_preset_path(char *out, unsigned int out_size, const char *dir, 
     return eqvita_build_data_path(out, out_size, dir, name);
 }
 
+static int file_size_bytes(const char *path, unsigned int *out_size);
+
 static int read_file_exact(const char *path, void *data, unsigned int size)
 {
+    unsigned int actual_size = 0;
+
+    if (file_size_bytes(path, &actual_size) < 0 || actual_size != size) {
+        return -1;
+    }
+
 #ifdef EQVITA_HOST_TESTS
     FILE *f;
     size_t read_size;

@@ -136,6 +136,7 @@ static int g_plugin_compatible = 0;
 static char g_message[96];
 static int g_message_frames = 0;
 static uint32_t g_status_log_frames = 0;
+static uint32_t g_log_run_id = 0;
 static int g_boot_state_save_failed = 0;
 static int g_status_failure_count = 0;
 static int g_confirm_button = SCE_CTRL_CROSS;
@@ -251,6 +252,36 @@ static const char *headroom_mode_str(uint8_t mode)
     }
 }
 
+static const char *diag_event_str(uint32_t type)
+{
+    switch (type) {
+        case EQ_DIAG_EVENT_CLIP_BLOCK: return "clip";
+        case EQ_DIAG_EVENT_BYPASS_BLOCK: return "bypass";
+        case EQ_DIAG_EVENT_SLOW_BLOCK: return "slow";
+        case EQ_DIAG_EVENT_OUTPUT_ERROR: return "output-error";
+        case EQ_DIAG_EVENT_COPY_ERROR: return "copy-error";
+        case EQ_DIAG_EVENT_DSP_RETARGET: return "dsp-retarget";
+        case EQ_DIAG_EVENT_PORT_OPEN: return "port-open";
+        case EQ_DIAG_EVENT_PORT_SET_CONFIG: return "port-config";
+        case EQ_DIAG_EVENT_PORT_RELEASE: return "port-release";
+        case EQ_DIAG_EVENT_CONTROL_SET: return "control-set";
+        case EQ_DIAG_EVENT_DROPPED_EVENTS: return "dropped";
+        case EQ_DIAG_EVENT_ACTIVE_SAMPLE: return "active";
+        case EQ_DIAG_EVENT_CONFIG_MISMATCH: return "config-mismatch";
+        default: return "unknown";
+    }
+}
+
+static const char *diag_port_type_str(uint8_t type)
+{
+    switch (type) {
+        case 0: return "main";
+        case 1: return "bgm";
+        case 2: return "voice";
+        default: return "unknown";
+    }
+}
+
 static const char *eq_target_str(void)
 {
     return g_control.speaker_only ? "Vita speakers" : "All outputs";
@@ -362,6 +393,10 @@ static void maybe_log_status(void)
     static int32_t last_clips = -1;
     static uint32_t last_busy_bypass = 0xffffffffu;
     static uint32_t last_unknown_port = 0xffffffffu;
+    static uint32_t last_max_us = 0xffffffffu;
+    static uint32_t last_max_total_us = 0xffffffffu;
+    static uint32_t last_max_dsp_us = 0xffffffffu;
+    static int32_t last_min_margin_us = INT32_MAX;
     int changed;
     int force_log;
 
@@ -376,7 +411,11 @@ static void maybe_log_status(void)
         g_status.eq_active != last_active ||
         g_status.clip_events != last_clips ||
         g_status.debug_busy_bypass_count != last_busy_bypass ||
-        g_status.debug_unknown_port_count != last_unknown_port);
+        g_status.debug_unknown_port_count != last_unknown_port ||
+        g_status.debug_max_us != last_max_us ||
+        g_status.debug_max_total_us != last_max_total_us ||
+        g_status.debug_max_dsp_us != last_max_dsp_us ||
+        g_status.debug_min_margin_us != last_min_margin_us);
 
     if (g_status_log_frames < STATUS_LOG_INTERVAL_FRAMES && !changed) {
         return;
@@ -385,7 +424,8 @@ static void maybe_log_status(void)
     if (force_log || changed) {
         uint32_t budget_us = audio_budget_us(g_status.debug_len, g_status.sample_rate);
         g_status_log_frames = 0;
-        app_log("status: route=%s active=%u reason=%s sr=%u port=%u len=%u ch=%u runs=%u ports=%u busy=%u unknown=%u last_us=%u max_us=%u clips=%d peak_l=%u peak_r=%u",
+        app_log("status: run=%08x route=%s active=%u reason=%s sr=%u port=%u len=%u ch=%u runs=%u ports=%u busy=%u unknown=%u last_us=%u max_us=%u clips=%d peak_l=%u peak_r=%u",
+            g_log_run_id,
             route_str(g_status.route),
             g_status.eq_active,
             bypass_reason_str(g_status.bypass_reason),
@@ -402,10 +442,60 @@ static void maybe_log_status(void)
             g_status.clip_events,
             g_status.peak_l,
             g_status.peak_r);
+        app_log("status-max: run=%08x max_us=%u max_budget_us=%u max_port=%u max_len=%u max_sr=%u max_ch=%u max_route=%s max_reason=%s max_clips=%d",
+            g_log_run_id,
+            g_status.debug_max_us,
+            g_status.debug_max_budget_us,
+            g_status.debug_max_port,
+            g_status.debug_max_len,
+            g_status.debug_max_sample_rate,
+            g_status.debug_max_channels,
+            route_str((uint8_t)g_status.debug_max_route),
+            bypass_reason_str((uint8_t)g_status.debug_max_bypass_reason),
+            g_status.debug_max_clip_count);
+        app_log("status-stage: run=%08x control_us=%u registry_us=%u route_us=%u copy_in_us=%u retarget_us=%u dsp_us=%u copy_out_us=%u original_us=%u status_us=%u",
+            g_log_run_id,
+            g_status.debug_max_stage_control_us,
+            g_status.debug_max_stage_registry_us,
+            g_status.debug_max_stage_route_us,
+            g_status.debug_max_stage_copy_in_us,
+            g_status.debug_max_stage_retarget_us,
+            g_status.debug_max_stage_dsp_us,
+            g_status.debug_max_stage_copy_out_us,
+            g_status.debug_max_stage_original_us,
+            g_status.debug_max_stage_status_us);
+        app_log("status-time: run=%08x last_total_us=%u last_budget_us=%u last_margin_us=%d max_total_us=%u max_dsp_us=%u",
+            g_log_run_id,
+            g_status.debug_last_total_us,
+            g_status.debug_last_budget_us,
+            g_status.debug_last_margin_us,
+            g_status.debug_max_total_us,
+            g_status.debug_max_dsp_us);
+        app_log("status-margin: run=%08x min_margin_us=%d min_total_us=%u min_budget_us=%u min_port=%u min_len=%u min_sr=%u min_ch=%u",
+            g_log_run_id,
+            g_status.debug_min_margin_us,
+            g_status.debug_min_margin_total_us,
+            g_status.debug_min_margin_budget_us,
+            g_status.debug_min_margin_port,
+            g_status.debug_min_margin_len,
+            g_status.debug_min_margin_sample_rate,
+            g_status.debug_min_margin_channels);
+        app_log("status-margin-stage: run=%08x min_route=%s min_reason=%s dsp_us=%u original_us=%u status_us=%u",
+            g_log_run_id,
+            route_str((uint8_t)g_status.debug_min_margin_route),
+            bypass_reason_str((uint8_t)g_status.debug_min_margin_bypass_reason),
+            g_status.debug_min_margin_stage_dsp_us,
+            g_status.debug_min_margin_stage_original_us,
+            g_status.debug_min_margin_stage_status_us);
+        app_log("status-margin-len: run=%08x len256_us=%d len1024_us=%d len2048_us=%d",
+            g_log_run_id,
+            g_status.debug_min_margin_len_256_us,
+            g_status.debug_min_margin_len_1024_us,
+            g_status.debug_min_margin_len_2048_us);
 
-        if (budget_us > 0 &&
-            (g_status.debug_last_us > budget_us || g_status.debug_max_us > budget_us)) {
-            app_log("audio-budget: last_us=%u budget_us=%u max_us=%u len=%u sr=%u",
+        if (budget_us > 0 && g_status.debug_last_us > budget_us) {
+            app_log("audio-budget: run=%08x last_us=%u budget_us=%u max_us=%u len=%u sr=%u",
+                g_log_run_id,
                 g_status.debug_last_us,
                 budget_us,
                 g_status.debug_max_us,
@@ -419,6 +509,88 @@ static void maybe_log_status(void)
         last_clips = g_status.clip_events;
         last_busy_bypass = g_status.debug_busy_bypass_count;
         last_unknown_port = g_status.debug_unknown_port_count;
+        last_max_us = g_status.debug_max_us;
+        last_max_total_us = g_status.debug_max_total_us;
+        last_max_dsp_us = g_status.debug_max_dsp_us;
+        last_min_margin_us = g_status.debug_min_margin_us;
+    }
+}
+
+static void maybe_log_diagnostics(void)
+{
+    eq_diag_snapshot_t snapshot;
+
+    if (!g_plugin_compatible) {
+        return;
+    }
+
+    memset(&snapshot, 0, sizeof(snapshot));
+    if (EqDrainDiagnostics(&snapshot) < 0) {
+        return;
+    }
+
+    if (snapshot.version != EQ_DIAG_SNAPSHOT_VERSION ||
+        snapshot.capacity != EQ_DIAG_MAX_EVENTS_PER_DRAIN) {
+        app_log("diag: run=%08x invalid-snapshot version=%u capacity=%u count=%u dropped=%u",
+            g_log_run_id,
+            snapshot.version,
+            snapshot.capacity,
+            snapshot.count,
+            snapshot.dropped);
+        return;
+    }
+
+    if (snapshot.dropped > 0) {
+        app_log("diag: run=%08x evt=dropped count=%u", g_log_run_id, snapshot.dropped);
+    }
+
+    if (snapshot.count > EQ_DIAG_MAX_EVENTS_PER_DRAIN) {
+        snapshot.count = EQ_DIAG_MAX_EVENTS_PER_DRAIN;
+    }
+
+    for (uint32_t i = 0; i < snapshot.count; ++i) {
+        const eq_diag_event_t *event = &snapshot.events[i];
+        if (event->version != EQ_DIAG_EVENT_VERSION) {
+            app_log("diag: run=%08x evt=invalid seq=%u version=%u",
+                g_log_run_id,
+                event->seq,
+                event->version);
+            continue;
+        }
+
+        app_log("diag-core: run=%08x seq=%u evt=%s port=%d gen=%u type=%s len=%u sr=%u ch=%u route=%s reason=%s ret=%d",
+            g_log_run_id,
+            event->seq,
+            diag_event_str(event->type),
+            event->port,
+            event->generation,
+            diag_port_type_str(event->port_type),
+            event->len,
+            event->sample_rate,
+            event->channels,
+            route_str(event->route),
+            bypass_reason_str(event->reason),
+            event->ret);
+        app_log("diag-time: run=%08x seq=%u elapsed_us=%u budget_us=%u dirty=%u flags=0x%02x",
+            g_log_run_id,
+            event->seq,
+            event->elapsed_us,
+            event->budget_us,
+            event->dirty_counter,
+            event->flags);
+        app_log("diag-level: run=%08x seq=%u clips=%d in_peak=%u/%u out_peak=%u/%u headroom=%s preamp=%d eff_preamp=%d max_boost=%d hpf=%u",
+            g_log_run_id,
+            event->seq,
+            event->clip_count,
+            event->input_peak_l,
+            event->input_peak_r,
+            event->output_peak_l,
+            event->output_peak_r,
+            headroom_mode_str(event->headroom_mode),
+            event->preamp_mdB,
+            event->effective_preamp_mdB,
+            event->max_boost_mdB,
+            event->hpf_enabled);
     }
 }
 
@@ -471,10 +643,7 @@ static int apply_control_candidate(const eq_control_t *candidate, int mark_boot_
 
     next = *candidate;
     next.route_hint = (uint8_t)detect_route_user();
-    next.dirty_counter = g_control.dirty_counter + 1;
-    if (next.dirty_counter == 0) {
-        next.dirty_counter = 1;
-    }
+    next.dirty_counter = eq_control_next_dirty_counter(g_control.dirty_counter);
 
     set_res = EqSetControl(&next);
     status_res = (set_res >= 0) ? EqGetStatus(&g_status) : -1;
@@ -728,6 +897,7 @@ static void restore_eq_entry(void)
 static void reset_defaults(void)
 {
     eq_control_t next = g_control;
+    eq_control_set_headroom_mode(&next, EQ_HEADROOM_SAFE);
     next.preamp_mdB = EQ_DEFAULT_PREAMP_MDB;
     for (int i = 0; i < EQ_BANDS; ++i) {
         next.band_gain_mdB[i] = 0;
@@ -762,6 +932,7 @@ static void apply_simple_eq(int bass, int mid, int treble, int auto_preamp)
 static void apply_preset_stock_depth(void)
 {
     eq_control_t next = g_control;
+    eq_control_set_headroom_mode(&next, EQ_HEADROOM_SAFE);
     next.preamp_mdB = -4000;
     next.band_gain_mdB[0] = 0;
     for (int i = 1; i <= 3; ++i) next.band_gain_mdB[i] = 4000;
@@ -1013,7 +1184,13 @@ static void row_value(char *value, size_t value_size, app_screen_t screen, int r
             else if (row == STATUS_ROW_SKIPPED) snprintf(value, value_size, "%u", g_status.debug_busy_bypass_count);
             else if (row == STATUS_ROW_UNKNOWN) snprintf(value, value_size, "%u", g_status.debug_unknown_port_count);
             else if (row == STATUS_ROW_LAST_BLOCK) snprintf(value, value_size, "%u us", g_status.debug_last_us);
-            else if (row == STATUS_ROW_SLOWEST_BLOCK) snprintf(value, value_size, "%u us", g_status.debug_max_us);
+            else if (row == STATUS_ROW_SLOWEST_BLOCK) {
+                if (g_status.debug_max_budget_us > 0) {
+                    snprintf(value, value_size, "%u/%u us", g_status.debug_max_us, g_status.debug_max_budget_us);
+                } else {
+                    snprintf(value, value_size, "%u us", g_status.debug_max_us);
+                }
+            }
             else if (row == STATUS_ROW_BLOCKS) snprintf(value, value_size, "%u", g_status.debug_run_count);
             break;
         case SCREEN_PRESETS:
@@ -1706,8 +1883,10 @@ int main(void)
         g_status.route = EQ_ROUTE_UNKNOWN;
         g_status.bypass_reason = EQ_BYPASS_DISABLED;
     }
-    app_log("---- run begin ----");
-    app_log("start: version=%d.%d.%d compatible=%d source=%s slot=%d route=%s",
+    g_log_run_id = sceKernelGetProcessTimeLow();
+    app_log("---- run begin run_id=%08x ----", g_log_run_id);
+    app_log("start: run_id=%08x version=%d.%d.%d compatible=%d source=%s slot=%d route=%s",
+        g_log_run_id,
         g_version.major, g_version.minor, g_version.patch,
         g_plugin_compatible,
         startup_source_str(g_plugin_compatible ? startup_source : EQVITA_STARTUP_SOURCE_DEFAULT),
@@ -1776,6 +1955,7 @@ int main(void)
         refresh_route_hint();
         render_frame();
         maybe_log_status();
+        maybe_log_diagnostics();
     }
 
     sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT, SCE_TOUCH_SAMPLING_STATE_STOP);

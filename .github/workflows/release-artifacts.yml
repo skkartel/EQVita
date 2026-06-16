@@ -1,0 +1,48 @@
+name: Release Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_name:
+        description: Artifact name shown in the workflow run
+        required: false
+        default: eqvita-release-artifacts
+
+permissions:
+  contents: read
+
+jobs:
+  build-release-artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Vita Release artifacts
+        run: |
+          docker run --rm \
+            -v "$PWD:/build/git" \
+            -w /build/git \
+            vitasdk/vitasdk@sha256:2d7203c960a3f76a1fcec72d8dcfb97ddbbde8086b56458291f54e2ec17fb0f3 \
+            bash -lc 'EQVITA_ARTIFACT_DIR=build EQVITA_BUILD_TYPE=Release EQVITA_CLEAN=1 bash scripts/build-wsl.sh'
+
+      - name: Check artifacts
+        run: |
+          test -f build/app/EQVita.vpk
+          test -f build/plugin/eq_speaker.skprx
+          unzip -l build/app/EQVita.vpk > build/vpk-contents.txt
+          ! grep -Ei '\.(ogg|mp3|wav)$' build/vpk-contents.txt
+
+      - name: Create checksums
+        run: |
+          sha256sum build/app/EQVita.vpk build/plugin/eq_speaker.skprx > build/EQVita.sha256
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: |
+            build/app/EQVita.vpk
+            build/plugin/eq_speaker.skprx
+            build/EQVita.sha256
+            build/vpk-contents.txt
+          if-no-files-found: error

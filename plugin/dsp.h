@@ -24,6 +24,11 @@ typedef struct eq_dsp_state
     eq_biquad_delay_t hpf_z[EQ_DSP_MAX_CHANNELS];
     uint8_t active_band_enabled[EQ_BANDS];
     uint8_t target_band_enabled[EQ_BANDS];
+    uint8_t active_band_index[EQ_BANDS];
+    uint8_t target_band_index[EQ_BANDS];
+    uint8_t active_band_count;
+    uint8_t target_band_count;
+    uint8_t targets_initialized;
     float preamp;
     float target_preamp;
     uint32_t smooth_remaining;
@@ -32,5 +37,6 @@ typedef struct eq_dsp_state
 
 void eq_dsp_init(eq_dsp_state_t *state, uint32_t sample_rate);
 void eq_dsp_set_targets(eq_dsp_state_t *state, uint32_t sample_rate, const int32_t *band_mdB, int32_t preamp_mdB, int hpf_enabled);
+void eq_dsp_apply_to(eq_dsp_state_t *state, const int16_t *input, int16_t *output, uint32_t frames, uint32_t channels, int32_t *clip_counter, uint16_t *peak_l, uint16_t *peak_r);
 void eq_dsp_apply(eq_dsp_state_t *state, int16_t *pcm, uint32_t frames, uint32_t channels, int32_t *clip_counter, uint16_t *peak_l, uint16_t *peak_r);
 uint32_t eq_dsp_active_band_count(const eq_dsp_state_t *state);
