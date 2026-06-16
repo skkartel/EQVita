@@ -24,6 +24,8 @@ Nerd version: the plugin hooks `sceAudioOutOutput`, while the app handles preset
 
 Current app/plugin ABI: `1.13.0`.
 
+Questions, setup help, preset sharing, and random EQVita ideas live in [Discussions](https://github.com/shev0k/EQVita/discussions). Issues are better for actual bugs with logs and steps.
+
 ## Official Builds
 
 Only builds from [shev0k/EQVita](https://github.com/shev0k/EQVita) are official.
