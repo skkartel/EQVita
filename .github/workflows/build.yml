@@ -1,0 +1,21 @@
+name: Build EQVita
+on: [push, pull_request]
+jobs:
+  build:
+    runs-allowed: write
+    runs-on: ubuntu-latest
+    container: vitasdk/vitasdk:latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Build Project
+        run: |
+          mkdir build && cd build
+          cmake ..
+          make
+      - name: Upload VPK and Plugin Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: EQVita-Slim-Build
+          path: |
+            build/*.vpk
+            build/*.skprx
