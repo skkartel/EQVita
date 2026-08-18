@@ -726,6 +726,21 @@ static int sceAudioOutOutput_hook(int port, const void *buf) {
                 reason = EQ_BYPASS_AUDIO_BUSY;
             } else if (!eq_audio_port_can_process(&processing_config, EQ_AUDIO_SCRATCH_MAX_FRAMES)) {
                 reason = (frames > EQ_AUDIO_SCRATCH_MAX_FRAMES) ? EQ_BYPASS_BUFFER_TOO_LARGE : EQ_BYPASS_UNSUPPORTED_FORMAT;
+            } else if (channels == 0 || channels > EQ_DSP_MAX_CHANNELS ||
+                       frames > EQ_AUDIO_SCRATCH_MAX_FRAMES ||
+                       (uint64_t)frames * (uint64_t)channels * sizeof(int16_t) > sizeof(processing_port->scratch)) {
+                /*
+                 * Hard, self-contained safety clamp. Never rely solely on
+                 * eq_audio_port_can_process()/the tracked config to bound the
+                 * upcoming ksceKernelCopyFromUser/CopyToUser size - re-validate
+                 * directly against the physical size of original[]/scratch[]
+                 * here. This guarantees a port that reports more than
+                 * EQ_DSP_MAX_CHANNELS channels (e.g. a multichannel BGM port),
+                 * or a stale/racy tracked config, can never overflow the fixed
+                 * kernel scratch buffers - it just gets bypassed instead of
+                 * corrupting kernel memory.
+                 */
+                reason = EQ_BYPASS_UNSUPPORTED_FORMAT;
             } else if (!control.enabled) {
                 reason = EQ_BYPASS_DISABLED;
             } else {
