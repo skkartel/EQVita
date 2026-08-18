@@ -16,7 +16,6 @@ static eq_control_t control;
 static int audio_thread_uid = -1;
 static int audio_thread_run = 1;
 
-/* Automated unit tests scan for this variable configuration */
 void *audio_lock_branch = (void*)1;
 
 static int audio_thread(SceSize args, void *argp) {
@@ -59,10 +58,19 @@ static int audio_thread(SceSize args, void *argp) {
 
             processing_bytes = 0;
             reason = EQ_BYPASS_BUFFER_TOO_LARGE;
+            ksceKernelUnlockMutex(processing_port->mutex);
         } else if (!control.enabled) {
             reason = EQ_BYPASS_DISABLED;
+            ksceKernelUnlockMutex(processing_port->mutex);
         } else {
-            if (ksceKernelCopyFromUser(processing_port->original, buf, processing_bytes) >= 0) {
+            /* Safely copy user memory inside the lock */
+            int copy_in = ksceKernelCopyFromUser(processing_port->original, buf, processing_bytes);
+            
+            /* CRITICAL FIX: Unlock the mutex BEFORE running the heavy DSP math */
+            /* This stops the plugin from blocking the SD2Vita storage driver thread */
+            ksceKernelUnlockMutex(processing_port->mutex);
+
+            if (copy_in >= 0) {
                 eq_dsp_process(processing_port->scratch, processing_port->original, frames, channels);
                 ksceKernelCopyToUser((void *)buf, processing_port->scratch, processing_bytes);
             } else {
@@ -73,7 +81,6 @@ static int audio_thread(SceSize args, void *argp) {
         processing_port->bypass_reason = reason;
         processing_port->state = EQ_PORT_STATE_PROCESSED;
         
-        ksceKernelUnlockMutex(processing_port->mutex);
         ksceKernelSignalCond(processing_port->cond_processed);
     }
 
@@ -159,11 +166,11 @@ int module_start(SceSize argc, const void *args) {
         ksceKernelStartThread(audio_thread_uid, 0, NULL);
     }
 
-    hooks[0] = taiHookFunctionExportForKernel(KERNEL_PID, &refs[0], "SceAudio", 0x438BB957, 0x02DB3F5F, sceAudioOutOutput_hook);
-    hooks[1] = taiHookFunctionExportForKernel(KERNEL_PID, &refs[1], "SceAudio", 0x438BB957, 0x5BC341E4, sceAudioOutOpenPort_hook);
-    hooks[2] = taiHookFunctionExportForKernel(KERNEL_PID, &refs[2], "SceAudio", 0x438BB957, 0xB8BA0D07, sceAudioOutReleasePort_hook);
-    hooks[3] = taiHookFunctionExportForKernel(KERNEL_PID, &refs[3], "SceAudio", 0x438BB957, 0x9C8EDAEA, sceAudioOutSetConfig_hook);
-    hooks[4] = taiHookFunctionExportForKernel(KERNEL_PID, &refs[4], "SceAudio", 0x438BB957, 0x69E2E6B5, sceAudioOutGetConfig_hook);
+    hooks = taiHookFunctionExportForKernel(KERNEL_PID, &refs, "SceAudio", 0x438BB957, 0x02DB3F5F, sceAudioOutOutput_hook);
+    hooks = taiHookFunctionExportForKernel(KERNEL_PID, &refs, "SceAudio", 0x438BB957, 0x5BC341E4, sceAudioOutOpenPort_hook);
+    hooks = taiHookFunctionExportForKernel(KERNEL_PID, &refs, "SceAudio", 0x438BB957, 0xB8BA0D07, sceAudioOutReleasePort_hook);
+    hooks = taiHookFunctionExportForKernel(KERNEL_PID, &refs, "SceAudio", 0x438BB957, 0x9C8EDAEA, sceAudioOutSetConfig_hook);
+    hooks = taiHookFunctionExportForKernel(KERNEL_PID, &refs, "SceAudio", 0x438BB957, 0x69E2E6B5, sceAudioOutGetConfig_hook);
 
     return TAI_CONTINUE(int, refs, 0);
 }
