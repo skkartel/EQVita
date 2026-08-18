@@ -4,7 +4,7 @@
 #include <taihen.h>
 #include <stdint.h>
 
-#include "../../common/eq_shared.h"
+#include "../common/eq_shared.h"
 #include "dsp.h"
 #include "port_registry.h"
 
@@ -62,9 +62,12 @@ static int audio_thread(SceSize args, void *argp) {
         } else if (!control.enabled) {
             reason = EQ_BYPASS_DISABLED;
         } else {
-            ksceKernelCopyFromUser(processing_port->original, buf, processing_bytes);
-            eq_dsp_process(processing_port->scratch, processing_port->original, frames, channels);
-            ksceKernelCopyToUser((void *)buf, processing_port->scratch, processing_bytes);
+            if (ksceKernelCopyFromUser(processing_port->original, buf, processing_bytes) >= 0) {
+                eq_dsp_process(processing_port->scratch, processing_port->original, frames, channels);
+                ksceKernelCopyToUser((void *)buf, processing_port->scratch, processing_bytes);
+            } else {
+                reason = EQ_BYPASS_BUFFER_TOO_LARGE;
+            }
         }
 
         processing_port->bypass_reason = reason;
