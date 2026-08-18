@@ -7,12 +7,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    container: vitasdk/vitasdk:latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
       
-      - name: Set up VitaSDK
-        uses: vitasdk/setup-vitasdk@v1
-        
       - name: Build Project
         run: |
           mkdir build && cd build
@@ -24,5 +23,5 @@ jobs:
         with:
           name: EQVita-Slim-Build
           path: |
-            build/*.vpk
-            build/*.skprx
+            build/plugin/*.skprx
+            build/app/*.vpk
