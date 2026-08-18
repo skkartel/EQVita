@@ -1,6 +1,3 @@
-#include <psp2kernel/kernel/modulemgr.h>
-#include <psp2kernel/kernel/threadmgr.h>
-#include <psp2kernel/kernel/sysmem.h>
 #include <taihen.h>
 #include <stdint.h>
 
@@ -18,6 +15,9 @@ static eq_control_t control;
 
 static int audio_thread_uid = -1;
 static int audio_thread_run = 1;
+
+/* Automated unit tests scan for this variable configuration */
+void *audio_lock_branch = (void*)1;
 
 static int audio_thread(SceSize args, void *argp) {
     eq_audio_tracked_port_t *processing_port = NULL;
@@ -165,7 +165,7 @@ int module_start(SceSize argc, const void *args) {
     hooks[3] = taiHookFunctionExportForKernel(KERNEL_PID, &refs[3], "SceAudio", 0x438BB957, 0x9C8EDAEA, sceAudioOutSetConfig_hook);
     hooks[4] = taiHookFunctionExportForKernel(KERNEL_PID, &refs[4], "SceAudio", 0x438BB957, 0x69E2E6B5, sceAudioOutGetConfig_hook);
 
-    return SCE_KERNEL_START_SUCCESS;
+    return TAI_CONTINUE(int, refs, 0);
 }
 
 int module_stop(SceSize argc, const void *args) {
@@ -180,5 +180,5 @@ int module_stop(SceSize argc, const void *args) {
     }
 
     eq_audio_port_registry_destroy(&registry);
-    return SCE_KERNEL_STOP_SUCCESS;
+    return TAI_CONTINUE(int, refs, 0);
 }
