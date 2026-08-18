@@ -1,5 +1,6 @@
 #include <taihen.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #include "../common/eq_shared.h"
 #include "dsp.h"
@@ -13,179 +14,325 @@ static tai_hook_ref_t refs[HOOKS_NUM];
 static eq_audio_port_registry_t registry;
 static eq_control_t control;
 
-static int audio_thread_uid = -1;
-static int audio_thread_run = 1;
-
 void *audio_lock_branch = (void*)1;
 
-static int audio_thread(SceSize args, void *argp) {
-    eq_audio_tracked_port_t *processing_port = NULL;
-    eq_audio_port_config_t processing_config;
-    size_t processing_bytes = 0;
-    uint32_t channels = 0;
-    uint32_t frames = 0;
-    uint32_t sample_rate = 0;
-    uint32_t reason = 0;
-    void *buf = NULL;
+static int sceAudioOutOutput_hook(int port, const void *buf)
+{
+    eq_audio_tracked_port_t *tracked_port;
+    uint32_t frames;
+    uint32_t channels;
+    size_t sample_count;
+    size_t processing_bytes;
+    size_t scratch_capacity;
+    int copy_in;
+    int copy_out;
 
-    while (audio_thread_run) {
-        processing_port = eq_audio_port_registry_get_next_processing(&registry);
-        if (!processing_port) {
-            ksceKernelDelayThread(1000);
-            continue;
-        }
+    if (!buf) {
+        return TAI_CONTINUE(int, refs[0], port, buf);
+    }
 
-        buf = processing_port->user_buffer;
-        reason = EQ_BYPASS_NONE;
+    tracked_port = eq_audio_port_registry_begin_processing(&registry, port);
 
-        ksceKernelLockMutex(processing_port->mutex, 1, NULL);
-        
-        processing_config = processing_port->pending_config;
-        processing_port->config = processing_config;
+    if (!tracked_port) {
+        return TAI_CONTINUE(int, refs[0], port, buf);
+    }
 
-        sample_rate = processing_config.freq;
-        channels = processing_config.channels;
-        frames = processing_config.len;
+    frames = tracked_port->config.len;
+    channels = tracked_port->config.channels;
 
-        processing_bytes = (size_t)frames * (size_t)channels * sizeof(int16_t);
+    /*
+     * Maximum number of int16 samples physically available in
+     * original[] and scratch[].
+     */
+    scratch_capacity =
+        (size_t)EQ_AUDIO_SCRATCH_MAX_FRAMES *
+        (size_t)EQ_DSP_MAX_CHANNELS;
 
-        if (channels == 0 ||
-            frames == 0 ||
-            channels > (SIZE_MAX / sizeof(int16_t)) ||
-            frames > (SIZE_MAX / ((size_t)channels * sizeof(int16_t))) ||
-            processing_bytes > sizeof(processing_port->scratch) ||
-            processing_bytes > sizeof(processing_port->original)) {
+    /*
+     * Reject invalid dimensions before doing any multiplication.
+     */
+    if (channels == 0 ||
+        channels > EQ_DSP_MAX_CHANNELS ||
+        frames == 0 ||
+        frames > EQ_AUDIO_SCRATCH_MAX_FRAMES) {
 
-            processing_bytes = 0;
-            reason = EQ_BYPASS_BUFFER_TOO_LARGE;
-            ksceKernelUnlockMutex(processing_port->mutex);
-        } else if (!control.enabled) {
-            reason = EQ_BYPASS_DISABLED;
-            ksceKernelUnlockMutex(processing_port->mutex);
-        } else {
-            /* Safely copy user memory inside the lock */
-            int copy_in = ksceKernelCopyFromUser(processing_port->original, buf, processing_bytes);
-            
-            /* CRITICAL FIX: Unlock the mutex BEFORE running the heavy DSP math */
-            /* This stops the plugin from blocking the SD2Vita storage driver thread */
-            ksceKernelUnlockMutex(processing_port->mutex);
+        eq_audio_port_registry_end_processing(tracked_port);
+        return TAI_CONTINUE(int, refs[0], port, buf);
+    }
 
-            if (copy_in >= 0) {
-                eq_dsp_process(processing_port->scratch, processing_port->original, frames, channels);
-                ksceKernelCopyToUser((void *)buf, processing_port->scratch, processing_bytes);
-            } else {
-                reason = EQ_BYPASS_BUFFER_TOO_LARGE;
-            }
-        }
+    /*
+     * Overflow-safe frames * channels calculation.
+     */
+    if ((size_t)frames > SIZE_MAX / (size_t)channels) {
+        eq_audio_port_registry_end_processing(tracked_port);
+        return TAI_CONTINUE(int, refs[0], port, buf);
+    }
 
-        processing_port->bypass_reason = reason;
-        processing_port->state = EQ_PORT_STATE_PROCESSED;
-        
-        ksceKernelSignalCond(processing_port->cond_processed);
+    sample_count = (size_t)frames * (size_t)channels;
+
+    /*
+     * Absolute multi-channel bounds defense:
+     *
+     * frames * channels must fit inside:
+     *
+     * EQ_AUDIO_SCRATCH_MAX_FRAMES * EQ_DSP_MAX_CHANNELS
+     */
+    if (sample_count > scratch_capacity) {
+        eq_audio_port_registry_end_processing(tracked_port);
+        return TAI_CONTINUE(int, refs[0], port, buf);
+    }
+
+    /*
+     * Protect sample_count -> byte-count conversion.
+     */
+    if (sample_count > SIZE_MAX / sizeof(int16_t)) {
+        eq_audio_port_registry_end_processing(tracked_port);
+        return TAI_CONTINUE(int, refs[0], port, buf);
+    }
+
+    processing_bytes = sample_count * sizeof(int16_t);
+
+    /*
+     * Confirm the calculated transfer fits both real arrays in
+     * eq_audio_tracked_port_t.
+     */
+    if (processing_bytes > sizeof(tracked_port->original) ||
+        processing_bytes > sizeof(tracked_port->scratch)) {
+
+        eq_audio_port_registry_end_processing(tracked_port);
+        return TAI_CONTINUE(int, refs[0], port, buf);
+    }
+
+    /*
+     * EQ disabled: leave the original audio path untouched.
+     */
+    if (!control.enabled) {
+        eq_audio_port_registry_end_processing(tracked_port);
+        return TAI_CONTINUE(int, refs[0], port, buf);
+    }
+
+    /*
+     * Copy incoming PCM into the tracked port's kernel-side buffer.
+     */
+    copy_in = ksceKernelCopyFromUser(
+        tracked_port->original,
+        buf,
+        processing_bytes
+    );
+
+    if (copy_in < 0) {
+        eq_audio_port_registry_end_processing(tracked_port);
+        return TAI_CONTINUE(int, refs[0], port, buf);
+    }
+
+    /*
+     * Run the actual DSP using the tracked port's persistent DSP state.
+     */
+    eq_dsp_apply_to(
+        &tracked_port->dsp,
+        tracked_port->original,
+        tracked_port->scratch,
+        frames,
+        channels,
+        NULL,
+        NULL,
+        NULL
+    );
+
+    /*
+     * Copy processed PCM back to SceAudio's output buffer.
+     */
+    copy_out = ksceKernelCopyToUser(
+        (void *)buf,
+        tracked_port->scratch,
+        processing_bytes
+    );
+
+    eq_audio_port_registry_end_processing(tracked_port);
+
+    if (copy_out < 0) {
+        return TAI_CONTINUE(int, refs[0], port, buf);
     }
 
     return 0;
 }
 
-static int sceAudioOutOutput_hook(int port, const void *buf) {
-    eq_audio_tracked_port_t *tracked_port = eq_audio_port_registry_get(&registry, port);
+static int sceAudioOutOpenPort_hook(
+    int type,
+    int len,
+    int freq,
+    int mode
+)
+{
+    int port;
 
-    if (!tracked_port) {
-        return TAI_CONTINUE(int, refs, port, buf);
-    }
+    port = TAI_CONTINUE(
+        int,
+        refs[1],
+        type,
+        len,
+        freq,
+        mode
+    );
 
-    ksceKernelLockMutex(tracked_port->mutex, 1, NULL);
-
-    if (tracked_port->state == EQ_PORT_STATE_FREE) {
-        tracked_port->user_buffer = (void *)buf;
-        tracked_port->state = EQ_PORT_STATE_READY;
-        
-        eq_audio_port_registry_push_processing(&registry, tracked_port);
-
-        while (tracked_port->state != EQ_PORT_STATE_PROCESSED) {
-            ksceKernelWaitCond(tracked_port->cond_processed, NULL);
-        }
-
-        tracked_port->state = EQ_PORT_STATE_FREE;
-        ksceKernelUnlockMutex(tracked_port->mutex);
-        
-        return 0;
-    }
-
-    ksceKernelUnlockMutex(tracked_port->mutex);
-    return TAI_CONTINUE(int, refs, port, buf);
-}
-
-static int sceAudioOutOpenPort_hook(int type, int len, int freq, int mode) {
-    int port = TAI_CONTINUE(int, refs, type, len, freq, mode);
     if (port >= 0) {
-        eq_audio_port_config_t config = { .type = type, .len = len, .freq = freq, .mode = mode, .channels = (mode == 0 ? 1 : 2) };
-        eq_audio_port_registry_add(&registry, port, &config);
+        eq_audio_port_registry_open(
+            &registry,
+            port,
+            (uint32_t)type,
+            (uint32_t)len,
+            (uint32_t)freq,
+            mode
+        );
     }
+
     return port;
 }
 
-static int sceAudioOutReleasePort_hook(int port) {
-    int ret = TAI_CONTINUE(int, refs, port);
+static int sceAudioOutReleasePort_hook(int port)
+{
+    int ret;
+
+    ret = TAI_CONTINUE(
+        int,
+        refs[2],
+        port
+    );
+
     if (ret == 0) {
-        eq_audio_port_registry_remove(&registry, port);
+        eq_audio_port_registry_release(
+            &registry,
+            port
+        );
     }
+
     return ret;
 }
 
-static int sceAudioOutSetConfig_hook(int port, int len, int freq, int mode) {
-    int ret = TAI_CONTINUE(int, refs, port, len, freq, mode);
+static int sceAudioOutSetConfig_hook(
+    int port,
+    int len,
+    int freq,
+    int mode
+)
+{
+    int ret;
+
+    ret = TAI_CONTINUE(
+        int,
+        refs[3],
+        port,
+        len,
+        freq,
+        mode
+    );
+
     if (ret == 0) {
-        eq_audio_port_config_t config = { .len = len, .freq = freq, .mode = mode, .channels = (mode == 0 ? 1 : 2) };
-        eq_audio_port_registry_update_config(&registry, port, &config);
+        eq_audio_port_registry_set_config(
+            &registry,
+            port,
+            (uint32_t)len,
+            freq,
+            mode
+        );
     }
+
     return ret;
 }
 
-static int sceAudioOutGetConfig_hook(int port, int type, int *val) {
-    int ret = TAI_CONTINUE(int, refs, port, type, val);
-    if (ret == 0 && type == 0) {
-        eq_audio_port_registry_sync_len(&registry, port, val);
-    }
-    return ret;
+static int sceAudioOutGetConfig_hook(
+    int port,
+    int type,
+    int *val
+)
+{
+    return TAI_CONTINUE(
+        int,
+        refs[4],
+        port,
+        type,
+        val
+    );
 }
 
-void _start() __attribute__ ((weak, alias ("module_start")));
-int module_start(SceSize argc, const void *args) {
+void _start(void) __attribute__((weak, alias("module_start")));
+
+int module_start(SceSize argc, const void *args)
+{
     tai_module_info_t info;
+
+    (void)argc;
+    (void)args;
+
     info.size = sizeof(tai_module_info_t);
 
     eq_audio_port_registry_init(&registry);
-    eq_dsp_init();
 
     control.enabled = 1;
 
-    audio_thread_run = 1;
-    audio_thread_uid = ksceKernelCreateThread("eq_audio_thread", audio_thread, 0x3C, 0x4000, 0, 0, NULL);
-    if (audio_thread_uid >= 0) {
-        ksceKernelStartThread(audio_thread_uid, 0, NULL);
-    }
+    hooks[0] = taiHookFunctionExportForKernel(
+        KERNEL_PID,
+        &refs[0],
+        "SceAudio",
+        0x438BB957,
+        0x02DB3F5F,
+        sceAudioOutOutput_hook
+    );
 
-    hooks = taiHookFunctionExportForKernel(KERNEL_PID, &refs, "SceAudio", 0x438BB957, 0x02DB3F5F, sceAudioOutOutput_hook);
-    hooks = taiHookFunctionExportForKernel(KERNEL_PID, &refs, "SceAudio", 0x438BB957, 0x5BC341E4, sceAudioOutOpenPort_hook);
-    hooks = taiHookFunctionExportForKernel(KERNEL_PID, &refs, "SceAudio", 0x438BB957, 0xB8BA0D07, sceAudioOutReleasePort_hook);
-    hooks = taiHookFunctionExportForKernel(KERNEL_PID, &refs, "SceAudio", 0x438BB957, 0x9C8EDAEA, sceAudioOutSetConfig_hook);
-    hooks = taiHookFunctionExportForKernel(KERNEL_PID, &refs, "SceAudio", 0x438BB957, 0x69E2E6B5, sceAudioOutGetConfig_hook);
+    hooks[1] = taiHookFunctionExportForKernel(
+        KERNEL_PID,
+        &refs[1],
+        "SceAudio",
+        0x438BB957,
+        0x5BC341E4,
+        sceAudioOutOpenPort_hook
+    );
 
-    return TAI_CONTINUE(int, refs, 0);
+    hooks[2] = taiHookFunctionExportForKernel(
+        KERNEL_PID,
+        &refs[2],
+        "SceAudio",
+        0x438BB957,
+        0xB8BA0D07,
+        sceAudioOutReleasePort_hook
+    );
+
+    hooks[3] = taiHookFunctionExportForKernel(
+        KERNEL_PID,
+        &refs[3],
+        "SceAudio",
+        0x438BB957,
+        0x9C8EDAEA,
+        sceAudioOutSetConfig_hook
+    );
+
+    hooks[4] = taiHookFunctionExportForKernel(
+        KERNEL_PID,
+        &refs[4],
+        "SceAudio",
+        0x438BB957,
+        0x69E2E6B5,
+        sceAudioOutGetConfig_hook
+    );
+
+    return SCE_KERNEL_START_SUCCESS;
 }
 
-int module_stop(SceSize argc, const void *args) {
-    audio_thread_run = 0;
-    if (audio_thread_uid >= 0) {
-        ksceKernelWaitThreadEnd(audio_thread_uid, NULL, NULL);
-        ksceKernelDeleteThread(audio_thread_uid);
+int module_stop(SceSize argc, const void *args)
+{
+    (void)argc;
+    (void)args;
+
+    for (int i = 0; i < HOOKS_NUM; ++i) {
+        if (hooks[i] >= 0) {
+            taiHookReleaseForKernel(
+                hooks[i],
+                refs[i]
+            );
+
+            hooks[i] = -1;
+        }
     }
 
-    for (int i = 0; i < HOOKS_NUM; i++) {
-        if (hooks[i] >= 0) taiHookReleaseForKernel(hooks[i], refs[i]);
-    }
-
-    eq_audio_port_registry_destroy(&registry);
-    return TAI_CONTINUE(int, refs, 0);
+    return SCE_KERNEL_STOP_SUCCESS;
 }
