@@ -1,14 +1,12 @@
 #include <psp2kernel/kernel/modulemgr.h>
 #include <psp2kernel/kernel/threadmgr.h>
 #include <psp2kernel/kernel/sysmem.h>
-#include <psp2kernel/kernel/audiomacro.h>
 #include <taihen.h>
-#include <string.h>
+#include <stdint.h>
 
 #include "../../common/eq_shared.h"
 #include "dsp.h"
 #include "port_registry.h"
-#include "port_state.h"
 
 #define HOOKS_NUM 5
 
@@ -50,22 +48,22 @@ static int audio_thread(SceSize args, void *argp) {
         channels = processing_config.channels;
         frames = processing_config.len;
 
-        if (!eq_audio_port_open(&processing_config)) {
-            reason = EQ_BYPASS_PORT_CLOSED;
-        } else if (!eq_audio_port_can_process(&processing_config, EQ_AUDIO_SCRATCH_MAX_FRAMES)) {
-            reason = (frames > EQ_AUDIO_SCRATCH_MAX_FRAMES) ? EQ_BYPASS_BUFFER_TOO_LARGE : EQ_BYPASS_UNSUPPORTED_FORMAT;
-        } else if (channels == 0 || channels > EQ_DSP_MAX_CHANNELS || frames > EQ_AUDIO_SCRATCH_MAX_FRAMES || ((uint64_t)frames * (uint64_t)channels * sizeof(int16_t)) > sizeof(processing_port->scratch)) {
-            reason = EQ_BYPASS_UNSUPPORTED_FORMAT;
+        processing_bytes = (size_t)frames * (size_t)channels * sizeof(int16_t);
+
+        if (channels == 0 ||
+            frames == 0 ||
+            channels > (SIZE_MAX / sizeof(int16_t)) ||
+            frames > (SIZE_MAX / ((size_t)channels * sizeof(int16_t))) ||
+            processing_bytes > sizeof(processing_port->scratch) ||
+            processing_bytes > sizeof(processing_port->original)) {
+
+            processing_bytes = 0;
+            reason = EQ_BYPASS_BUFFER_TOO_LARGE;
         } else if (!control.enabled) {
             reason = EQ_BYPASS_DISABLED;
         } else {
-            processing_bytes = (size_t)frames * channels * sizeof(int16_t);
-
             ksceKernelCopyFromUser(processing_port->original, buf, processing_bytes);
-
-            eq_audio_port_set_config(&processing_config);
-            eq_dsp_process(processing_port->scratch, processing_port->original, frames, eq_audio_mode_to_channels(processing_config.mode));
-
+            eq_dsp_process(processing_port->scratch, processing_port->original, frames, channels);
             ksceKernelCopyToUser((void *)buf, processing_port->scratch, processing_bytes);
         }
 
@@ -80,11 +78,10 @@ static int audio_thread(SceSize args, void *argp) {
 }
 
 static int sceAudioOutOutput_hook(int port, const void *buf) {
-    int ret = 0;
     eq_audio_tracked_port_t *tracked_port = eq_audio_port_registry_get(&registry, port);
 
     if (!tracked_port) {
-        return TAI_CONTINUE(int, refs[0], port, buf);
+        return TAI_CONTINUE(int, refs, port, buf);
     }
 
     ksceKernelLockMutex(tracked_port->mutex, 1, NULL);
@@ -106,20 +103,20 @@ static int sceAudioOutOutput_hook(int port, const void *buf) {
     }
 
     ksceKernelUnlockMutex(tracked_port->mutex);
-    return TAI_CONTINUE(int, refs[0], port, buf);
+    return TAI_CONTINUE(int, refs, port, buf);
 }
 
 static int sceAudioOutOpenPort_hook(int type, int len, int freq, int mode) {
-    int port = TAI_CONTINUE(int, refs[1], type, len, freq, mode);
+    int port = TAI_CONTINUE(int, refs, type, len, freq, mode);
     if (port >= 0) {
-        eq_audio_port_config_t config = { .type = type, .len = len, .freq = freq, .mode = mode, .channels = eq_audio_mode_to_channels(mode) };
+        eq_audio_port_config_t config = { .type = type, .len = len, .freq = freq, .mode = mode, .channels = (mode == 0 ? 1 : 2) };
         eq_audio_port_registry_add(&registry, port, &config);
     }
     return port;
 }
 
 static int sceAudioOutReleasePort_hook(int port) {
-    int ret = TAI_CONTINUE(int, refs[2], port);
+    int ret = TAI_CONTINUE(int, refs, port);
     if (ret == 0) {
         eq_audio_port_registry_remove(&registry, port);
     }
@@ -127,16 +124,16 @@ static int sceAudioOutReleasePort_hook(int port) {
 }
 
 static int sceAudioOutSetConfig_hook(int port, int len, int freq, int mode) {
-    int ret = TAI_CONTINUE(int, refs[3], port, len, freq, mode);
+    int ret = TAI_CONTINUE(int, refs, port, len, freq, mode);
     if (ret == 0) {
-        eq_audio_port_config_t config = { .len = len, .freq = freq, .mode = mode, .channels = eq_audio_mode_to_channels(mode) };
+        eq_audio_port_config_t config = { .len = len, .freq = freq, .mode = mode, .channels = (mode == 0 ? 1 : 2) };
         eq_audio_port_registry_update_config(&registry, port, &config);
     }
     return ret;
 }
 
 static int sceAudioOutGetConfig_hook(int port, int type, int *val) {
-    int ret = TAI_CONTINUE(int, refs[4], port, type, val);
+    int ret = TAI_CONTINUE(int, refs, port, type, val);
     if (ret == 0 && type == 0) {
         eq_audio_port_registry_sync_len(&registry, port, val);
     }
